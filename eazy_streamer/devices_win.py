@@ -133,4 +133,8 @@ class Watcher(QObject):
         proc.finished.connect(finished)
         proc.errorOccurred.connect(error)
         proc.start(osdep.ffmpeg_path(), args)
-        QTimer.singleShot(_TIMEOUT_MS, lambda: proc.kill() if proc.state() != QProcess.ProcessState.NotRunning else None)
+        # Таймер — дитина процесу: зникає разом із ним і не смикає вже видалений об'єкт
+        guard = QTimer(proc)
+        guard.setSingleShot(True)
+        guard.timeout.connect(proc.kill)
+        guard.start(_TIMEOUT_MS)
