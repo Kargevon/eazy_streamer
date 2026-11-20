@@ -1,8 +1,9 @@
 """Оновлення з GitHub.
 
 Якщо програма стоїть як клон репозиторію і в системі є git — оновлюємось через git pull.
-Інакше (типово на Windows: архів без git) — порівнюємо файл VERSION з тим, що на GitHub,
-і розпаковуємо свіжий архів поверх програми.
+Інакше (типово на Windows: тека з архіву) — дивимось номер останнього релізу на GitHub
+і розпаковуємо його код поверх програми. Реліз з'являється лише після того, як збірка
+пройшла перевірку, тож невдалий push до таких машин не доїде.
 """
 
 from __future__ import annotations
@@ -21,8 +22,10 @@ from .log import log
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _TIMEOUT_MS = 40000
 _REPO = "Kargevon/eazy_streamer"
-_VERSION_URL = "https://raw.githubusercontent.com/%s/main/VERSION" % _REPO
-_ZIP_URL = "https://github.com/%s/archive/refs/heads/main.zip" % _REPO
+_LATEST_URL = "https://github.com/%s/releases/latest" % _REPO      # переадресовує на …/tag/vX.Y.Z
+_ZIP_URL = "https://github.com/%s/archive/refs/tags/v%%s.zip" % _REPO
+# З архіву беремо лише код: Python, Qt і ffmpeg у теці runtime оновлення не чіпає
+_UPDATED_PATHS = ("eazy_streamer/", "VERSION", "eazy-streamer")
 
 
 def local_version() -> str:
@@ -45,6 +48,14 @@ def _as_numbers(version: str) -> tuple:
     return tuple(int(part) for part in version.strip().split(".") if part.isdigit())
 
 
+def _latest_release() -> str:
+    """Номер останнього релізу. Порожньо — релізів ще немає."""
+    request = urllib.request.Request(_LATEST_URL, headers={"User-Agent": "eazy_streamer"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        final = response.geturl()
+    return final.rsplit("/tag/v", 1)[1].strip("/") if "/tag/v" in final else ""
+
+
 def _download(url: str, limit: int) -> bytes:
     request = urllib.request.Request(url, headers={"User-Agent": "eazy_streamer"})
     with urllib.request.urlopen(request, timeout=30) as response:
@@ -60,7 +71,7 @@ def _unpack(archive: bytes) -> None:
     with zipfile.ZipFile(io.BytesIO(archive)) as z:
         for item in z.infolist():
             relative = item.filename.split("/", 1)[1] if "/" in item.filename else ""
-            if not relative or item.is_dir():
+            if not relative or item.is_dir() or not relative.startswith(_UPDATED_PATHS):
                 continue
             target = os.path.realpath(os.path.join(root, relative))
             if not target.startswith(root + os.sep):
@@ -85,6 +96,7 @@ class Updater(QObject):
         super().__init__(parent)
         self._proc: QProcess | None = None
         self.busy = False
+        self._remote = ""
         self._from_thread.connect(self._on_thread_result)
 
     def check(self):
@@ -117,18 +129,20 @@ class Updater(QObject):
 
     def _check_by_download(self):
         try:
-            remote = _download(_VERSION_URL, 100).decode("ascii", "replace").strip().splitlines()[0][:20]
+            remote = _latest_release()
         except Exception as e:
             log.info("Оновлення: не вдалося прочитати версію з GitHub: %s", e)
             self._from_thread.emit("failed", "Не вдалося зв'язатися з GitHub")
             return
-        log.info("Оновлення: тут %s, на GitHub %s", local_version(), remote)
-        newer = _as_numbers(remote) > _as_numbers(local_version())
+        log.info("Оновлення: тут %s, останній реліз на GitHub %s", local_version(), remote or "немає")
+        self._remote = remote
+        newer = bool(remote) and _as_numbers(remote) > _as_numbers(local_version())
         self._from_thread.emit("available" if newer else "up_to_date", remote)
 
     def _apply_by_download(self):
         try:
-            _unpack(_download(_ZIP_URL, 50_000_000))
+            version = self._remote or _latest_release()
+            _unpack(_download(_ZIP_URL % version, 50_000_000))
         except Exception as e:
             log.error("Оновлення: не встановилось: %s", e)
             self._from_thread.emit("failed", "Оновлення не встановилось: %s" % str(e)[:100])

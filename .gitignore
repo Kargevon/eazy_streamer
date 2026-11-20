@@ -15,3 +15,4 @@ dist/
 
 # Windows: сюди лаунчер завантажує Python, Qt і ffmpeg
 runtime/
+build/

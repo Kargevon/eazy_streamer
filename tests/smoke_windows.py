@@ -37,6 +37,8 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from eazy_streamer import app as A, ffmpeg_cmd as F, log as L, osdep, updater  # noqa: E402
 
 FFMPEG = osdep.ffmpeg_path()
+FFPROBE = os.environ.get("EAZY_FFPROBE") or FFMPEG.replace("ffmpeg.exe", "ffprobe.exe")
+LAUNCHER = os.environ.get("EAZY_LAUNCHER")
 PORT = 19555
 URL = "rtmp://127.0.0.1:%d/live/key" % PORT
 OUT = os.path.join(TMP, "got.flv")
@@ -52,6 +54,28 @@ def run(args, timeout=30):
     r = subprocess.run(args, capture_output=True, timeout=timeout)
     return r.returncode, (r.stdout + r.stderr).decode("utf-8", "replace")
 
+
+if LAUNCHER:
+    # Запускач стартує програму на справжньому екрані Windows — так перевіряється і він,
+    # і те, що з Qt не викинуто потрібного для звичайного вікна
+    os.environ.pop("QT_QPA_PLATFORM", None)
+    started = subprocess.Popen([LAUNCHER]).wait(timeout=30)
+    time.sleep(15)
+    try:
+        early = open(L.log_path(), encoding="utf-8", errors="replace").read()
+    except OSError:
+        early = ""
+    subprocess.run(["taskkill", "/F", "/IM", "pythonw.exe"], capture_output=True)
+    window_up = "Екран:" in early       # цей рядок пишеться вже після створення вікна
+    note("Запускач", "код виходу: %s\nвікно створилось: %s\nрядків у журналі: %d\n%s" % (
+        started, window_up, early.count("\n"),
+        "\n".join(l[24:200] for l in early.splitlines() if "CRITICAL" in l or "Traceback" in l or "Error" in l)[:900]))
+    if started != 0:
+        problems.append("запускач завершився з кодом %s" % started)
+    if not window_up:
+        problems.append("програма через запускач не дійшла до створення вікна")
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    time.sleep(2)
 
 L.setup()
 L.system_summary()
@@ -128,7 +152,7 @@ listener_err = listener.stderr.read().decode("utf-8", "replace")[-300:]
 
 log_text = open(L.log_path(), encoding="utf-8", errors="replace").read()
 killed = "вбиваю" in log_text
-code, probe = run([FFMPEG.replace("ffmpeg.exe", "ffprobe.exe"), "-v", "error", "-show_entries",
+code, probe = run([FFPROBE, "-v", "error", "-show_entries",
                    "stream=codec_name,width,height,avg_frame_rate", "-show_entries", "format=duration,bit_rate",
                    "-of", "compact", OUT])
 

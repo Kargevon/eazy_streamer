@@ -1,25 +1,58 @@
-# Перевірка на справжній Windows: лаунчер ставить усе сам, тести, короткий ефір у локальний приймач.
-# Відеокарти й карт захоплення на цих машинах немає — перевіряється все, крім них.
+# Збірка для Windows. На кожен push у main з кодом: скласти теку програми, перевірити саме її
+# (тести, запускач, короткий ефір) і лише після цього викласти архів у Releases.
+# Відеокарти й карт захоплення на машинах GitHub немає — перевіряється все, крім них.
 name: windows
 on:
   push:
     branches: [main]
-    paths: ["eazy_streamer/**", "tests/**", "eazy-streamer.bat", ".github/workflows/windows.yml"]
+    paths: ["eazy_streamer/**", "tests/**", "launcher/**", ".github/**", "VERSION"]
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write       # потрібно, щоб створити реліз; більше цей дозвіл нічого не відкриває
+concurrency:
+  group: windows-release
+  cancel-in-progress: false
 jobs:
-  smoke:
+  build:
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Лаунчер ставить Python, Qt і ffmpeg
+
+      - name: Скласти теку (Python, Qt, ffmpeg, код)
         shell: cmd
-        run: call eazy-streamer.bat --setup-only
-      - name: Тести
+        run: python .github\build_windows.py assemble
+
+      - name: Зібрати EazyStreamer.exe
         shell: cmd
-        run: runtime\python\python.exe -m unittest discover -s tests -v
-      - name: Ефір у локальний приймач
+        run: |
+          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set "VS=%%i"
+          call "%VS%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          cl /nologo /utf-8 /O1 /MT /W4 /DUNICODE /D_UNICODE launcher\EazyStreamer.c /Fo:build\ /Fe:build\EazyStreamer\EazyStreamer.exe /link /SUBSYSTEM:WINDOWS user32.lib || exit /b 1
+
+      - name: Тести на зібраній теці
         shell: cmd
-        run: runtime\python\python.exe tests\smoke_windows.py
+        run: build\EazyStreamer\runtime\python\python.exe -m unittest discover -s tests -v
+
+      - name: Запускач і короткий ефір на зібраній теці
+        shell: cmd
+        env:
+          EAZY_LAUNCHER: ${{ github.workspace }}\build\EazyStreamer\EazyStreamer.exe
+          EAZY_FFPROBE: ${{ github.workspace }}\build\tools\ffprobe.exe
+        run: build\EazyStreamer\runtime\python\python.exe tests\smoke_windows.py
+
+      - name: Запакувати
+        shell: cmd
+        run: python .github\build_windows.py pack
+
+      - name: Викласти реліз
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          # Той самий номер уже викладено (push без зміни версії) — замінюємо свіжою збіркою
+          gh release delete "v$version" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "v$version" build/EazyStreamer-"$version"-windows.zip build/EazyStreamer-"$version"-windows.zip.sha256 \
+            --target "$GITHUB_SHA" --title "Eazy Streamer $version" \
+            --notes "Windows: розпакуйте архів і запустіть EazyStreamer.exe. Debian: див. README."
