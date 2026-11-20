@@ -220,7 +220,7 @@ class Engine(QObject):
         if prev and cur[0] > prev[0]:
             dt = cur[0] - prev[0]
             out_fps = (cur[1] - prev[1]) / dt
-            # вихід = джерело + подвоєні − викинуті, звідси джерело
+            # в ефір іде рівно стільки кадрів, скільки дало джерело (якщо не проріджуємо 60 -> 30)
             self.src_fps = max(0.0, ((cur[1] - prev[1]) - (cur[2] - prev[2]) + (cur[3] - prev[3])) / dt)
         self._reports += 1
         speed = s.get("speed", "").rstrip("x")
@@ -231,7 +231,7 @@ class Engine(QObject):
         if self._reports % 5 != 1 and not slow and not lossy:
             return
         log.log(30 if slow or lossy else 20,
-                "[%s] хід: кадрів %s, в ефір %s к/с, джерело %s к/с, %s, викинуто %s, подвоєно %s, "
+                "[%s] хід: кадрів %s, в ефір %s к/с (джерело без проріджування %s), %s, викинуто %s, подвоєно %s, "
                 "швидкість %s, CPU %s, мережа: затримка %s мс, повторів %s%%, усього повторно %s байт",
                 self.label, s.get("frame", "?"), "%.1f" % out_fps if out_fps is not None else "?",
                 "%.1f" % self.src_fps if self.src_fps is not None else "?", s.get("bitrate", "?"),

@@ -51,6 +51,16 @@ class CaptureSizeTest(unittest.TestCase):
                      {("YUYV", 1280, 720): [10.0], ("MJPG", 1280, 720): [30.0, 15.0]})
         self.assertEqual(pick_capture(cam, 720), ("MJPG", (1280, 720), 30))
 
+    def test_sends_as_many_frames_as_source_gives(self):
+        pal = Device("pal", "/dev/video7", "analog", {"MJPG": [(640, 480)]}, {("MJPG", 640, 480): [25.0]})
+        args = F.build(pal, URL, F.quality("low"))
+        self.assertEqual(args[args.index("-fps_mode") + 1], "vfr")
+        self.assertNotIn("-r", args)
+        self.assertEqual(args[args.index("-g") + 1], "50")
+        self.assertNotIn("framestep", " ".join(args))
+        fast = Device("fast", "/dev/video6", "hdmi60", {"YUYV": [(1280, 720)]}, {("YUYV", 1280, 720): [60.0]})
+        self.assertIn("framestep=2,", " ".join(F.build(fast, URL, F.quality("mid"))))
+
     def test_levels(self):
         F.HW_NODE, F.GPU_PIPE = "/dev/dri/renderD128", True
         try:

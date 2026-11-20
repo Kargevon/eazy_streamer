@@ -49,17 +49,17 @@ def hw_probe_args(node: str, low_power: bool = False) -> list[str]:
             "-vf", "format=nv12,hwupload"] + _hw_encoder(2500, low_power) + ["-f", "null", "-"]
 
 
-def _hw_encoder(kbit: int, low_power: bool) -> list[str]:
+def _hw_encoder(kbit: int, low_power: bool, gop: int = STREAM_FPS * 2) -> list[str]:
     return ["-c:v", "h264_vaapi", "-b:v", "%dk" % kbit, "-maxrate", "%dk" % kbit,
-            "-bufsize", "%dk" % (kbit * 2), "-bf", "0", "-g", str(STREAM_FPS * 2)] + (
+            "-bufsize", "%dk" % (kbit * 2), "-bf", "0", "-g", str(gop)] + (
                 ["-low_power", "1"] if low_power else [])
 
 
-def _cpu_encoder(kbit: int) -> list[str]:
+def _cpu_encoder(kbit: int, gop: int = STREAM_FPS * 2) -> list[str]:
     return ["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
             "-profile:v", "main",
             "-b:v", "%dk" % kbit, "-maxrate", "%dk" % kbit, "-bufsize", "%dk" % (kbit * 2),
-            "-g", str(STREAM_FPS * 2), "-keyint_min", str(STREAM_FPS * 2), "-sc_threshold", "0"]
+            "-g", str(gop), "-keyint_min", str(gop), "-sc_threshold", "0"]
 
 
 def quality(key: str) -> Quality:
@@ -142,14 +142,15 @@ _CPU_PREVIEW = "fps=%d,scale=%d:%d:force_original_aspect_ratio=decrease:flags=fa
     PREVIEW_FPS, PREVIEW_W, PREVIEW_H, _PAD)
 
 
-def _gpu_graph(fourcc: str | None, size: tuple[int, int], out_h: int) -> str:
+def _gpu_graph(fourcc: str | None, size: tuple[int, int], out_h: int, thin: str = "") -> str:
     """Рівень 2: кадр потрапляє на GPU одразу, на CPU повертається лише крихітний перегляд."""
     out_w = _even(size[0] * out_h / size[1])
     pw, ph = _fit(size, PREVIEW_W, PREVIEW_H)
     if fourcc == "MJPG":
-        head = "[0:v]split=2[a][p]"                     # розтиснув GPU, кадр уже там
+        head = "[0:v]%ssplit=2[a][p]" % thin            # розтиснув GPU, кадр уже там
     else:
-        head = "[0:v]format=%s,hwupload,split=2[a][p]" % ("yuyv422" if fourcc == "YUYV" else "nv12")
+        head = "[0:v]%sformat=%s,hwupload,split=2[a][p]" % (
+            thin, "yuyv422" if fourcc == "YUYV" else "nv12")
     return ("%s;[a]scale_vaapi=w=%d:h=%d:format=nv12[air];"
             "[p]fps=%d,scale_vaapi=w=%d:h=%d:format=nv12,hwdownload,format=nv12,%s[pv]" % (
                 head, out_w, out_h, PREVIEW_FPS, pw, ph, _PAD))
@@ -191,18 +192,21 @@ def build(device: Device | None, url: str | None, q: Quality, level: int | None 
     # Тиха звукова доріжка: частина серверів і плеєрів не приймає потік без звуку
     args += ["-f", "lavfi", "-i", "anullsrc=channel_layout=mono:sample_rate=44100"]
 
+    # В ефір іде стільки кадрів, скільки дає джерело: 25 — то 25, 10 — то 10, без подвоєнь.
+    # Лише якщо карта не вміє менше ніж 60 — беремо кожен другий, щоб не кодувати зайвого.
+    step = int(-(-rate // STREAM_FPS)) if rate and rate > STREAM_FPS * 1.2 else 1
+    thin = "framestep=%d," % step if step > 1 else ""
+    gop = max(20, int(round(2 * rate / step))) if rate else STREAM_FPS * 2     # ключовий кадр раз на 2 с
     if level == 2:
-        graph = _gpu_graph(fourcc, size, min(q.height, size[1]))
+        graph = _gpu_graph(fourcc, size, min(q.height, size[1]), thin)
     else:
         air = "scale=w=-2:h='min(%d,ih)':flags=bilinear,%s" % (
             q.height, "format=nv12,hwupload" if level == 1 else "format=yuv420p")
-        graph = "[0:v]split=2[a][p];[a]%s[air];[p]%s[pv]" % (air, _CPU_PREVIEW)
+        graph = "[0:v]%ssplit=2[a][p];[a]%s[air];[p]%s[pv]" % (thin, air, _CPU_PREVIEW)
     args += ["-filter_complex", graph, "-map", "[air]", "-map", "1:a"]
     kbit = stream_kbit(device, q)
-    args += _hw_encoder(kbit, HW_LOW_POWER) if level >= 1 else _cpu_encoder(kbit)
-    # Частоту кадрів вирівнює сам вихід, а не фільтр: тоді ffmpeg рахує подвоєні
-    # й викинуті кадри, і з них видно справжню частоту джерела
-    args += ["-r", str(STREAM_FPS), "-fps_mode", "cfr"]
+    args += _hw_encoder(kbit, HW_LOW_POWER, gop) if level >= 1 else _cpu_encoder(kbit, gop)
+    args += ["-fps_mode", "vfr"]
     args += [
         "-c:a", "aac", "-b:a", "32k",
         "-shortest", "-flvflags", "no_duration_filesize",
