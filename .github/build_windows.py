@@ -136,6 +136,10 @@ def pack():
     version = open(os.path.join(ROOT, "VERSION")).read().strip()
     if not os.path.exists(os.path.join(DIST, "EazyStreamer.exe")):
         sys.exit("у теці немає EazyStreamer.exe — запускач не зібрано")
+    # Ярлик, який програма створила під час перевірки, веде в теку збірки — у реліз він не йде
+    for name in os.listdir(DIST):
+        if name.lower().endswith(".lnk"):
+            os.remove(os.path.join(DIST, name))
     for leftover in ("logs", "data"):
         if os.path.exists(os.path.join(DIST, leftover)):
             sys.exit("у теці збірки лишилось %s — перевірка писала не туди" % leftover)

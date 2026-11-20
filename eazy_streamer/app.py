@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QVBoxLayout, QWidget,
 )
 
-from . import awake, config, devices, engine, ffmpeg_cmd, hwenc, netwatch, osdep, updater
+from . import awake, config, devices, engine, ffmpeg_cmd, hwenc, netwatch, osdep, shortcut, updater
 from . import log as logs
 from .log import log
 
@@ -747,6 +747,7 @@ def main() -> int:
     app.setStyleSheet(STYLE)
     window = Window()
     window.show()
+    QTimer.singleShot(1500, shortcut.refresh)       # після появи вікна: запуск не чекає
     if not osdep.has_ffmpeg():
         QMessageBox.warning(window, "Eazy Streamer",
                             "Не знайдено ffmpeg — без нього стрім не піде.\n" + (

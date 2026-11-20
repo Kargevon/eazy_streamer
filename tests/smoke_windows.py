@@ -71,6 +71,16 @@ if LAUNCHER:
         early = ""
     program.kill()
     program.wait(timeout=10)
+    from eazy_streamer import shortcut  # noqa: E402
+    lnk = os.path.join(os.path.dirname(LAUNCHER), shortcut.NAME)
+    try:
+        points_to = shortcut.read_target(lnk)
+    except Exception as e:
+        points_to = "ПОМИЛКА: %r" % e
+    note("Ярлик", "файл: %s, %s байт\nведе на: %s" % (
+        os.path.exists(lnk), os.path.getsize(lnk) if os.path.exists(lnk) else 0, points_to))
+    if points_to.lower() != LAUNCHER.lower():
+        problems.append("ярлик не створився або веде не туди: %s" % points_to)
     window_up = "Екран:" in early       # цей рядок пишеться вже після створення вікна
     note("Запускач", "вийшла сама (None = ні, працювала): %s\nвікно створилось: %s\nрядків у журналі: %d\n%s" % (
         started, window_up, early.count("\n"),
