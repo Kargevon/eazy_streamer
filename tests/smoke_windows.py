@@ -139,9 +139,15 @@ note("Ефір", "кодер: %s\nджерела: %s\nстан в ефірі: %s
 note("Оновлення і журнал", "перевірка оновлень: %s (спосіб: %s)\nжурнал: %s, %d рядків\nпроби кодерів:\n%s" % (
     seen.get("update"), "git" if updater.uses_git() else "завантаження", L.log_path(), log_text.count("\n"),
     "\n".join(l[32:200] for l in log_text.splitlines() if "Проба" in l)))
-bad = [l[24:260] for l in log_text.splitlines() if " ERROR " in l or " CRITICAL " in l or "Traceback" in l]
+lines = log_text.splitlines()
+bad = []
+for i, l in enumerate(lines):
+    if " ERROR " in l or " CRITICAL " in l:
+        bad.append(l[24:260])
+        if len(bad) < 3:        # текст помилки йде наступними рядками — беремо його для перших двох
+            bad += [x[:200] for x in lines[i + 1:i + 14] if not x[:4].isdigit()]
 if bad:
-    note("Помилки в журналі", "\n".join(bad[:12]))
+    note("Помилки в журналі", "\n".join(bad[:34]))
 
 if seen.get("live_state") != "live":
     problems.append("стрім не вийшов в ефір: %s" % seen.get("live_status"))
