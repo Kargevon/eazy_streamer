@@ -9,6 +9,11 @@ from PySide6.QtGui import QImage
 
 from . import ffmpeg_cmd
 from .devices import Device
+from .log import log, mask
+
+_PROGRESS_KEYS = ("frame", "fps", "bitrate", "total_size", "out_time", "dup_frames",
+                  "drop_frames", "speed", "progress", "stream_")
+_FFMPEG_LINES_PER_WINDOW = 30   # більше за 10 с у журнал не пишемо — лише лічимо
 
 IDLE, STARTING, PREVIEW, LIVE, RETRY = "idle", "starting", "preview", "live", "retry"
 
@@ -36,6 +41,12 @@ class Engine(QObject):
         self._fails = 0
         self._retry_left = 0
         self._reason = ""
+        self.label = "?"            # назва секції — для журналу
+        self.stats: dict[str, str] = {}
+        self._err_line = bytearray()
+        self._pending: dict[str, str] = {}
+        self._quiet_since = 0.0
+        self._quiet_count = 0
         self.state = IDLE
         self.live_since = 0.0
 
@@ -94,6 +105,9 @@ class Engine(QObject):
         self._running = self._want
         self._buf.clear()
         self._err.clear()
+        self._err_line.clear()
+        self._pending = {}
+        self.stats = {}
         self._stopping = False
         self._got_frame = False
         self._started_at = self._last_frame_at = time.monotonic()
@@ -109,6 +123,10 @@ class Engine(QObject):
         proc.errorOccurred.connect(self._on_error)
         self._proc = proc
         self._set(STARTING, "Підключення…" if url else "")
+        log.info("[%s] старт %s: джерело «%s», якість %s, кодер %s", self.label,
+                 "ЕФІРУ" if url else "перегляду", device.name, quality.label if url else "-",
+                 (ffmpeg_cmd.HW_NODE or "CPU") if url else "-")
+        log.debug("[%s] ffmpeg %s", self.label, mask(" ".join(args)))
         proc.start("ffmpeg", args)
 
     def _stop(self):
@@ -116,11 +134,13 @@ class Engine(QObject):
         if proc is None or self._stopping:
             return
         self._stopping = True
+        log.info("[%s] зупиняю ffmpeg (pid %s)", self.label, proc.processId())
         proc.terminate()
         QTimer.singleShot(_STOP_GRACE_MS, lambda: self._kill_if_same(proc))
 
     def _kill_if_same(self, proc: QProcess):
         if self._proc is proc and proc.state() != QProcess.ProcessState.NotRunning:
+            log.warning("[%s] ffmpeg не вийшов сам за %d мс — вбиваю", self.label, _STOP_GRACE_MS)
             proc.kill()
 
     def _on_stdout(self):
@@ -138,6 +158,8 @@ class Engine(QObject):
         self._last_frame_at = time.monotonic()
         if not self._got_frame:
             self._got_frame = True
+            log.info("[%s] перший кадр через %.1f с після старту", self.label,
+                     time.monotonic() - self._started_at)
             if self._running and self._running[1]:
                 self.live_since = time.monotonic()
                 self._set(LIVE, "")
@@ -151,8 +173,37 @@ class Engine(QObject):
         proc = self._proc
         if proc is None or self.sender() is not proc:
             return
-        self._err += proc.readAllStandardError().data()
+        self._err_line += proc.readAllStandardError().data()
+        *lines, rest = bytes(self._err_line).split(b"\n")
+        self._err_line = bytearray(rest)
+        for raw in lines:
+            line = raw.decode("utf-8", "replace").strip()
+            if line:
+                self._on_ffmpeg_line(line)
+
+    def _on_ffmpeg_line(self, line: str):
+        key, sep, value = line.partition("=")
+        if sep and key.startswith(_PROGRESS_KEYS) and " " not in key:
+            self._pending[key] = value.strip()
+            if key == "progress":
+                self.stats, self._pending = self._pending, {}
+                log.info("[%s] хід: кадрів %s, %s к/с, %s, пропущено %s, подвоєно %s, швидкість %s",
+                         self.label, self.stats.get("frame", "?"), self.stats.get("fps", "?"),
+                         self.stats.get("bitrate", "?"), self.stats.get("drop_frames", "?"),
+                         self.stats.get("dup_frames", "?"), self.stats.get("speed", "?"))
+            return
+        self._err += line.encode("utf-8") + b"\n"
         del self._err[:-4000]
+        # ffmpeg уміє сипати одним попередженням на кожен кадр — такий потік лише лічимо
+        now = time.monotonic()
+        if now - self._quiet_since > 10:
+            if self._quiet_count > _FFMPEG_LINES_PER_WINDOW:
+                log.warning("[%s] ffmpeg: …ще %d рядків за 10 с не записано", self.label,
+                            self._quiet_count - _FFMPEG_LINES_PER_WINDOW)
+            self._quiet_since, self._quiet_count = now, 0
+        self._quiet_count += 1
+        if self._quiet_count <= _FFMPEG_LINES_PER_WINDOW:
+            log.warning("[%s] ffmpeg: %s", self.label, mask(line))
 
     def _on_error(self, error):
         # Сюди потрапляємо, коли ffmpeg взагалі не запустився: finished не прийде
@@ -162,6 +213,7 @@ class Engine(QObject):
         self._proc = None
         self._running = None
         self._want = None
+        log.error("[%s] ffmpeg не запустився взагалі", self.label)
         self._set(IDLE, "Не знайдено ffmpeg. Встановіть: sudo apt install ffmpeg")
 
     def _on_finished(self, *_):
@@ -172,11 +224,17 @@ class Engine(QObject):
         reason = ffmpeg_cmd.explain(bytes(self._err).decode("utf-8", "replace"), url)
         ran = time.monotonic() - self._started_at
         intended = self._stopping
+        log.log(20 if intended else 40,
+                "[%s] ffmpeg завершився: код %s, %s, пропрацював %.1f с, %s%s", self.label,
+                proc.exitCode(), "сам" if proc.exitStatus() == QProcess.ExitStatus.NormalExit else "вбитий/впав",
+                ran, "зупинка з нашого боку" if intended else "НЕСПОДІВАНО",
+                "" if intended else " — причина: " + reason)
         if (not intended and url and ffmpeg_cmd.HW_NODE and not self._got_frame
                 and "vaapi" in bytes(self._err).decode("utf-8", "replace").lower()):
             # Проба пройшла, а справжній потік відеокарта не потягнула — далі процесором
             ffmpeg_cmd.HW_NODE = None
-            reason = "відеокарта не впоралась, кодую процесором"
+            reason = "GPU не впорався, кодую на CPU"
+            log.error("[%s] GPU відмовив на справжньому потоці — усі стріми далі кодує CPU", self.label)
         proc.deleteLater()
         self._proc = None
         self._running = None
@@ -224,10 +282,13 @@ class Engine(QObject):
             if time.monotonic() - self._last_frame_at > _STALL_SECONDS:
                 # Процес живий, а кадрів нема: мережа або карта зависла
                 self._err += b"\nstalled"
+                log.error("[%s] %d с без жодного кадру — вбиваю ffmpeg", self.label, _STALL_SECONDS)
                 self._proc.kill()
         if self.state == LIVE:
             self.changed.emit(LIVE, "")     # щоб вікно оновило лічильник часу
 
     def _set(self, state: str, text: str):
+        if state != self.state:
+            log.info("[%s] стан: %s -> %s %s", self.label, self.state, state, text)
         self.state = state
         self.changed.emit(state, text)

@@ -80,7 +80,10 @@ def build(device: Device | None, url: str | None, q: Quality) -> list[str]:
     відкрити карту двома процесами не можна, тому перегляд — другий вихід.
     """
     hw = HW_NODE if url else None
-    args = ["-hide_banner", "-nostdin", "-loglevel", "error"]
+    args = ["-hide_banner", "-nostdin", "-loglevel", "warning", "-nostats"]
+    if url:
+        # Раз на 5 с ffmpeg звітує в stderr: кадри, бітрейт, пропуски, швидкість
+        args += ["-progress", "pipe:2", "-stats_period", "5"]
     if hw:
         args += ["-vaapi_device", hw]
     args += _input(device, q.height if url else 480)

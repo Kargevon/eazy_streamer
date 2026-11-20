@@ -8,6 +8,7 @@ import sys
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
 
 from . import ffmpeg_cmd
+from .log import log
 
 _TIMEOUT_MS = 8000
 
@@ -45,6 +46,7 @@ class Probe(QObject):
 
     def _next(self):
         if not self._nodes:
+            log.info("Проба кодера: жоден GPU не кодує — працює CPU")
             self.done.emit()
             return
         node, driver, low = self._nodes.pop(0)
@@ -63,6 +65,9 @@ class Probe(QObject):
         if proc is not self._proc:
             return
         ok = code == 0 and proc.exitStatus() == QProcess.ExitStatus.NormalExit
+        err = bytes(proc.readAllStandardError().data()).decode("utf-8", "replace").strip().splitlines()
+        log.info("Проба кодера %s driver=%s low_power=%s: %s", node, driver or "auto", low,
+                 "КОДУЄ" if ok else "ні — код %s — %s" % (code, " | ".join(err[:3])[:300]))
         self._proc = None
         proc.deleteLater()
         if ok:

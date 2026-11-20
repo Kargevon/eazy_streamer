@@ -6,6 +6,8 @@ import os
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
 
+from .log import log
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _TIMEOUT_MS = 40000
 
@@ -103,6 +105,7 @@ class Updater(QObject):
             out = bytes(p.readAllStandardOutput().data()).decode("utf-8", "replace")
             err = bytes(p.readAllStandardError().data()).decode("utf-8", "replace")
             p.deleteLater()
+            log.info("git %s: код %s %s", " ".join(args), code, (out + " " + err).strip()[:300])
             then(code if status == QProcess.ExitStatus.NormalExit else -1, out, err)
 
         def error(_e, p=proc):

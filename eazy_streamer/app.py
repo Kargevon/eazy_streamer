@@ -7,8 +7,8 @@ import shutil
 import sys
 import time
 
-from PySide6.QtCore import QRect, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QImage, QPainter
+from PySide6.QtCore import QRect, QSize, Qt, QTimer, QUrl
+from PySide6.QtGui import QColor, QDesktopServices, QImage, QPainter
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QComboBox, QFrame, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QScrollArea,
@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
 )
 
 from . import config, devices, engine, ffmpeg_cmd, hwenc, updater
+from . import log as logs
+from .log import log
 
 CARD_MIN_W, CARD_MAX_W = 380, 620
 REFRESH_MS = 3000
@@ -180,6 +182,8 @@ class Card(QFrame):
         box.addWidget(self.go_btn)
         box.addWidget(self.status)
 
+        self.engine.label = self.title()
+        self.name_edit.textEdited.connect(lambda _t: setattr(self.engine, "label", self.title()))
         self.name_edit.textEdited.connect(window.save_soon)
         self.url_edit.textEdited.connect(self._on_url_edited)
         self.eye_btn.toggled.connect(self._on_eye)
@@ -269,6 +273,7 @@ class Card(QFrame):
 
     def _on_go(self):
         if self.live:
+            log.info("[%s] КНОПКА: зупинити", self.title())
             self.live = False
             self._note = ""
             self.sync()
@@ -281,6 +286,10 @@ class Card(QFrame):
         else:
             self._note = ""
             self.live = True
+            log.info("[%s] КНОПКА: почати стрім, якість %s, джерело «%s», куди %s", self.title(),
+                     self.quality_key(), self.source_name, logs.mask(self.url_edit.text().strip()))
+        if self._note:
+            log.info("[%s] старт відхилено: %s", self.title(), self._note)
         self.sync()
 
     def _on_url_edited(self, _text: str):
@@ -327,6 +336,15 @@ class Card(QFrame):
             tone = "wait" if live else "calm"
         elif state == engine.LIVE:
             text, tone = "● В ефірі  %s" % _clock(time.monotonic() - self.engine.live_since), "ok"
+            stats = self.engine.stats
+            if stats.get("bitrate", "").endswith("kbits/s"):
+                try:
+                    text += "  ·  %.1f Мбіт/с" % (float(stats["bitrate"][:-7]) / 1000)
+                except ValueError:
+                    pass
+                slow = stats.get("speed", "1x").rstrip("x")
+                if slow.replace(".", "", 1).isdigit() and float(slow) < 0.9:
+                    text, tone = text + "  ·  ПК не встигає", "wait"
         elif state == engine.STARTING:
             text, tone = ("Підключення до сервера…", "wait") if live else ("Відкриваю джерело…", "calm")
         elif state == engine.RETRY:
@@ -388,6 +406,10 @@ class Window(QMainWindow):
         top.addWidget(self.update_note)
         top.addStretch(1)
         top.addWidget(self.encoder_note)
+        logs_btn = QPushButton("Журнал")
+        logs_btn.setToolTip("Відкрити папку з журналом роботи:\n%s" % logs.log_dir())
+        logs_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(logs.log_dir())))
+        top.addWidget(logs_btn)
         top.addWidget(add_btn)
 
         self.grid_host = QWidget()
@@ -429,6 +451,11 @@ class Window(QMainWindow):
         self.hw_probe = hwenc.Probe(self)
         self.hw_probe.done.connect(self._show_encoder)
         self.hw_probe.start()
+
+        self._load_timer = QTimer(self)
+        self._load_timer.setInterval(15000)
+        self._load_timer.timeout.connect(self._log_load)
+        self._load_timer.start()
 
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setInterval(REFRESH_MS)
@@ -492,6 +519,11 @@ class Window(QMainWindow):
 
     # --- джерела і налаштування ----------------------------------------
 
+    def _log_load(self):
+        live = [c.title() for c in self.cards if c.live]
+        if live:
+            log.info("Машина: %s | в ефірі %d: %s", logs.load_line(), len(live), ", ".join(live))
+
     def _show_encoder(self):
         self.encoder_note.setText("Кодує " + hwenc.encoder_name())
         self.encoder_note.setToolTip(
@@ -547,6 +579,7 @@ class Window(QMainWindow):
         os.execv(sys.executable, [sys.executable, "-m", "eazy_streamer"])
 
     def _shutdown(self):
+        log.info("Закриття програми")
         self._refresh_timer.stop()
         self._save_timer.stop()
         self.save_now()
@@ -561,6 +594,11 @@ class Window(QMainWindow):
             return
         self._device_keys = keys
         self._devices = found
+        log.info("Джерел знайдено: %d", len(found))
+        for dev in found:
+            log.info("  %s -> %s | %s", dev.name, dev.path, "; ".join(
+                "%s: %s" % (fmt, " ".join("%dx%d" % s for s in sizes) or "будь-який розмір")
+                for fmt, sizes in dev.formats.items()))
         for card in self.cards:
             card.set_devices(found)
 
@@ -593,6 +631,9 @@ def _ask(parent: QWidget, question: str) -> bool:
 
 
 def main() -> int:
+    logs.setup()
+    logs.system_summary()
+    log.info("Eazy Streamer %s, папка %s", updater.local_version(), updater.ROOT)
     app = QApplication(sys.argv)
     app.setApplicationName("Eazy Streamer")
     app.setStyleSheet(STYLE)

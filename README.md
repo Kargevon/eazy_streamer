@@ -32,6 +32,9 @@ sudo apt install ffmpeg python3-pyside6.qtwidgets
 | `eazy_streamer/app.py` | вікно і секції |
 | `eazy_streamer/config.py` | збереження секцій |
 
+Журнал роботи: `~/.local/state/eazy_streamer/eazy_streamer.log` (кнопка «Журнал» у шапці відкриває папку).
+Ключі стрімів у журнал не потрапляють — посилання маскуються.
+
 Тести: `python3 -m unittest discover -s tests`
 
 Поки лише Linux. Звук із карти не передається (у потік іде тиха доріжка).
