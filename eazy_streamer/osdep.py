@@ -68,6 +68,8 @@ def restart() -> None:
     """Запустити програму наново (після оновлення)."""
     os.chdir(ROOT)
     command = [sys.executable, "-m", "eazy_streamer"]
+    if os.path.basename(sys.executable).lower() == "eazystreamer.exe":
+        command = [sys.executable]      # цей exe відкриває програму сам, без параметрів
     if IS_WIN:
         subprocess.Popen(command, cwd=ROOT, close_fds=True, **NO_WINDOW)
         os._exit(0)

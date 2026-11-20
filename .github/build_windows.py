@@ -1,6 +1,6 @@
 """Складає теку програми для Windows. Запускає GitHub Actions, людям цей файл не потрібен.
 
-    python .github/build_windows.py assemble   — зібрати build/EazyStreamer (без EazyStreamer.exe)
+    python .github/build_windows.py assemble   — зібрати build/EazyStreamer
     python .github/build_windows.py pack       — запакувати її в zip і порахувати контрольну суму
 
 Версії закріплено: у реліз іде рівно те, що пройшло перевірку.
@@ -72,6 +72,17 @@ def assemble():
     # Цей Python бачить лише перелічене тут: себе, свої пакунки і теку програми двома рівнями вище
     with open(os.path.join(python_dir, "python312._pth"), "w", newline="\r\n") as f:
         f.write("python312.zip\n.\n..\\..\nimport site\n")
+
+    # EazyStreamer.exe — це pythonw.exe під іншим іменем: він підписаний Python Software
+    # Foundation, і Windows його пускає. Власний непідписаний запускач блокував Smart App Control.
+    # Поруч йому потрібні бібліотеки Python і свій перелік шляхів; програму відкриває sitecustomize.
+    shutil.copy(os.path.join(python_dir, "pythonw.exe"), os.path.join(DIST, "EazyStreamer.exe"))
+    for name in os.listdir(python_dir):
+        if name.lower() in ("python312.dll", "python3.dll") or name.lower().startswith("vcruntime"):
+            shutil.copy(os.path.join(python_dir, name), DIST)
+    with open(os.path.join(DIST, "python312._pth"), "w", newline="\r\n") as f:
+        f.write("runtime\\python\\python312.zip\nruntime\\python\nruntime\\python\\Lib\\site-packages\n.\nimport site\n")
+    shutil.copy(os.path.join(ROOT, "launcher", "sitecustomize.py"), DIST)
 
     subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-compile", "--target", SITE,
                            "--platform", "win_amd64", "--python-version", "3.12", "--only-binary=:all:",
