@@ -35,19 +35,23 @@ DEFAULT_QUALITY = "mid"
 HW_NODE: str | None = None
 # Якщо карта кодує лише з конкретним драйвером VAAPI (напр. старий i965 для Intel) — його ім'я
 HW_DRIVER: str | None = None
-HW_DRIVERS = (None, "i965", "iHD", "radeonsi")     # None = хай система обере сама
+# Режим low-power: інший кодер усередині Intel; вільний драйвер iHD вміє лише його
+HW_LOW_POWER = False
+# (драйвер, low-power) у порядку спроб. None = хай система обере драйвер сама
+HW_VARIANTS = ((None, False), (None, True), ("iHD", True), ("i965", False), ("radeonsi", False))
 
 
-def hw_probe_args(node: str) -> list[str]:
+def hw_probe_args(node: str, low_power: bool = False) -> list[str]:
     """Короткий пробний запуск: чи вміє ця відеокарта кодувати H.264."""
     return ["-hide_banner", "-loglevel", "error", "-vaapi_device", node,
             "-f", "lavfi", "-i", "color=size=1280x720:rate=30", "-frames:v", "10",
-            "-vf", "format=nv12,hwupload"] + _hw_encoder(2500) + ["-f", "null", "-"]
+            "-vf", "format=nv12,hwupload"] + _hw_encoder(2500, low_power) + ["-f", "null", "-"]
 
 
-def _hw_encoder(kbit: int) -> list[str]:
+def _hw_encoder(kbit: int, low_power: bool) -> list[str]:
     return ["-c:v", "h264_vaapi", "-b:v", "%dk" % kbit, "-maxrate", "%dk" % kbit,
-            "-bufsize", "%dk" % (kbit * 2), "-bf", "0", "-g", str(STREAM_FPS * 2)]
+            "-bufsize", "%dk" % (kbit * 2), "-bf", "0", "-g", str(STREAM_FPS * 2)] + (
+                ["-low_power", "1"] if low_power else [])
 
 
 def _cpu_encoder(kbit: int) -> list[str]:
@@ -95,7 +99,7 @@ def build(device: Device | None, url: str | None, q: Quality) -> list[str]:
         STREAM_FPS, q.height, "format=nv12,hwupload" if hw else "format=yuv420p")
     graph = "[0:v]split=2[a][p];[a]%s[air];[p]%s[pv]" % (air, preview)
     args += ["-filter_complex", graph, "-map", "[air]", "-map", "1:a"]
-    args += _hw_encoder(q.kbit) if hw else _cpu_encoder(q.kbit)
+    args += _hw_encoder(q.kbit, HW_LOW_POWER) if hw else _cpu_encoder(q.kbit)
     args += [
         "-c:a", "aac", "-b:a", "32k",
         "-shortest", "-flvflags", "no_duration_filesize",

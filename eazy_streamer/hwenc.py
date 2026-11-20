@@ -19,32 +19,32 @@ class Probe(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._nodes: list[tuple[str, str | None]] = []
+        self._nodes: list[tuple[str, str | None, bool]] = []
         self._proc: QProcess | None = None
 
     def start(self):
         if sys.platform.startswith("linux"):
-            self._nodes = [(node, driver) for node in sorted(glob.glob("/dev/dri/renderD*"))
-                           for driver in ffmpeg_cmd.HW_DRIVERS]
+            self._nodes = [(node, driver, low) for node in sorted(glob.glob("/dev/dri/renderD*"))
+                           for driver, low in ffmpeg_cmd.HW_VARIANTS]
         self._next()
 
     def _next(self):
         if not self._nodes:
             self.done.emit()
             return
-        node, driver = self._nodes.pop(0)
+        node, driver, low = self._nodes.pop(0)
         proc = QProcess(self)
         self._proc = proc
         if driver:
             env = QProcessEnvironment.systemEnvironment()
             env.insert("LIBVA_DRIVER_NAME", driver)
             proc.setProcessEnvironment(env)
-        proc.finished.connect(lambda code, _status, n=node, d=driver, p=proc: self._on_finished(p, n, d, code))
+        proc.finished.connect(lambda code, _status, n=node, d=driver, lo=low, p=proc: self._on_finished(p, n, d, lo, code))
         proc.errorOccurred.connect(lambda _e, p=proc: self._on_error(p))
-        proc.start("ffmpeg", ffmpeg_cmd.hw_probe_args(node))
+        proc.start("ffmpeg", ffmpeg_cmd.hw_probe_args(node, low))
         QTimer.singleShot(_TIMEOUT_MS, lambda p=proc: self._on_timeout(p))
 
-    def _on_finished(self, proc: QProcess, node: str, driver: str | None, code: int):
+    def _on_finished(self, proc: QProcess, node: str, driver: str | None, low: bool, code: int):
         if proc is not self._proc:
             return
         ok = code == 0 and proc.exitStatus() == QProcess.ExitStatus.NormalExit
@@ -53,6 +53,7 @@ class Probe(QObject):
         if ok:
             ffmpeg_cmd.HW_NODE = node
             ffmpeg_cmd.HW_DRIVER = driver
+            ffmpeg_cmd.HW_LOW_POWER = low
             self.done.emit()
         else:
             self._next()

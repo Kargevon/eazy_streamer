@@ -8,16 +8,22 @@ for card in /sys/class/drm/renderD*; do
     echo "$(basename "$card"): виробник $(cat "$card/device/vendor")  драйвер ядра $(basename "$(readlink "$card/device/driver")")"
 done
 echo "драйвери VAAPI: $(ls /usr/lib/*/dri/*_drv_video.so 2>/dev/null | xargs -n1 basename 2>/dev/null | sed 's/_drv_video.so//' | sort -u | tr '\n' ' ')"
+echo "пакети: $(dpkg-query -W -f='${db:Status-Abbrev}${Package}\n' 'intel-media-va-driver*' 'i965-va-driver*' 'mesa-va-drivers' 2>/dev/null | grep '^ii' | cut -c4- | sort -u | tr '\n' ' ')"
 for node in /dev/dri/renderD*; do
-    for driver in auto i965 iHD radeonsi; do
+    for variant in auto auto+lp iHD+lp i965 radeonsi; do
+        driver=${variant%+lp}
+        lp=""; [ "$variant" != "$driver" ] && lp="-low_power 1"
         [ "$driver" = auto ] && unset LIBVA_DRIVER_NAME || export LIBVA_DRIVER_NAME="$driver"
         err=$(ffmpeg -hide_banner -loglevel error -vaapi_device "$node" -f lavfi \
             -i color=size=1280x720:rate=30 -frames:v 10 -vf format=nv12,hwupload \
-            -c:v h264_vaapi -b:v 2500k -maxrate 2500k -bufsize 5000k -bf 0 -g 60 -f null - 2>&1)
+            -c:v h264_vaapi -b:v 2500k -maxrate 2500k -bufsize 5000k -bf 0 -g 60 $lp -f null - 2>&1)
         if [ $? -eq 0 ]; then
-            echo "$(basename "$node") $driver: КОДУЄ"
+            echo "$(basename "$node") $variant: КОДУЄ"
         else
-            echo "$(basename "$node") $driver: ні — $(echo "$err" | grep -v '^$' | tail -1 | sed 's/^\[[^]]*\] *//' | cut -c1-80)"
+            # Найкорисніший рядок — перший про кодер; якщо такого нема, беремо перший-ліпший
+            why=$(echo "$err" | grep -i -m1 -E "entrypoint|rate control|not supported|assert|failed to" \
+                || echo "$err" | grep -v '^$' | head -1)
+            echo "$(basename "$node") $variant: ні — $(echo "$why" | sed 's/^\[[^]]*\] *//' | cut -c1-70)"
         fi
     done
 done
