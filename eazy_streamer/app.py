@@ -411,6 +411,8 @@ class Card(QFrame):
             text += "\n" + "  ·  ".join(parts)
         elif state == engine.STARTING:
             text, tone = ("Підключення до сервера…", "wait") if live else ("Відкриваю джерело…", "calm")
+            if self.engine.note:
+                text, tone = self.engine.note, "wait"
         elif state == engine.RETRY:
             text, tone = self.engine.retry_text(), ("bad" if live else "calm")
         elif state == engine.PREVIEW:

@@ -19,6 +19,7 @@ _FFMPEG_LINES_PER_WINDOW = 30   # більше за 10 с у журнал не �
 IDLE, STARTING, PREVIEW, LIVE, RETRY = "idle", "starting", "preview", "live", "retry"
 
 _STALL_SECONDS = 12         # стільки без жодного кадру — вважаємо, що завис
+_EMPTY_START_SECONDS = 6    # карта відкрилась, але шле порожні кадри: перезапускаємо швидше
 _STOP_GRACE_MS = 6000       # стільки чекаємо чемного виходу (закриття RTMPS — кілька секунд), далі вбиваємо
 _RETRY_STEPS = (2, 4, 8, 15)
 _HEALTHY_SECONDS = 30       # пропрацював стільки — лічильник спроб з нуля
@@ -57,6 +58,8 @@ class Engine(QObject):
         self.in_fps: float | None = None    # скільки кадрів за секунду дає джерело
         self.out_fps: float | None = None   # скільки йде в ефір
         self.rate_mode = "cbr"              # як керується бітрейт у цьому ефірі
+        self.note = ""                      # що відбувається, поки картинки ще немає
+        self._empty_frames = False
         self._step = 1
         self.stalled = False                # ефір іде, а нових кадрів немає
         self._rate_prev = None
@@ -142,6 +145,8 @@ class Engine(QObject):
         self._size_last = 0
         self._recent = []
         self.kbit_now = self.in_fps = self.out_fps = None
+        self.note = ""
+        self._empty_frames = False
         self.stalled = False
         self.net = {}
         self.src_fps = None
@@ -183,6 +188,11 @@ class Engine(QObject):
             return
         self._stopping = True
         log.info("[%s] зупиняю ffmpeg (pid %s)", self.label, proc.processId())
+        if not self._got_frame:
+            # Ще жодного кадру: ffmpeg чекає на карту й на прохання не відповість, а закривати
+            # на сервері йому ще нічого. Не тримаємо людину 6 секунд — зупиняємо одразу.
+            proc.kill()
+            return
         osdep.ask_to_quit(proc)
         QTimer.singleShot(_STOP_GRACE_MS, lambda: self._kill_if_same(proc))
 
@@ -324,6 +334,11 @@ class Engine(QObject):
             return
         self._err += line.encode("utf-8") + b"\n"
         del self._err[:-4000]
+        if not self._got_frame and "corrupted data (0 bytes)" in line and not self._empty_frames:
+            # Дешеві HDMI-карти після відкриття якийсь час шлють порожні кадри
+            self._empty_frames = True
+            self.note = "Карта відкрилась, але картинки ще не дає"
+            self.changed.emit(self.state, self.note)
         # ffmpeg уміє сипати одним попередженням на кожен кадр — такий потік лише лічимо
         now = time.monotonic()
         if now - self._quiet_since > 10:
@@ -412,10 +427,11 @@ class Engine(QObject):
                 self._start()
             return
         if self._proc is not None and not self._stopping:
-            if time.monotonic() - self._last_frame_at > _STALL_SECONDS:
+            limit = _EMPTY_START_SECONDS if (self._empty_frames and not self._got_frame) else _STALL_SECONDS
+            if time.monotonic() - self._last_frame_at > limit:
                 # Процес живий, а кадрів нема: мережа або карта зависла
                 self._err += b"\nstalled"
-                log.error("[%s] %d с без жодного кадру — вбиваю ffmpeg", self.label, _STALL_SECONDS)
+                log.error("[%s] %d с без жодного кадру — вбиваю ffmpeg", self.label, limit)
                 self._proc.kill()
         if self.state == LIVE:
             self.changed.emit(LIVE, "")     # щоб вікно оновило лічильник часу

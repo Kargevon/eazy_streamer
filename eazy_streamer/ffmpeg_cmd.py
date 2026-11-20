@@ -346,6 +346,7 @@ def explain(stderr_tail: str, url: str | None) -> str:
         text = text.replace(url.strip(), "…")
     low = text.lower()
     known = (
+        ("corrupted data (0 bytes)", "карта не дає картинки — перевірте сигнал на її вході"),
         ("stalled", "потік завис"),
         ("device or resource busy", "карта зайнята іншою програмою"),
         ("no such device", "карту від'єднано"),
