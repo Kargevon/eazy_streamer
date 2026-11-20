@@ -74,9 +74,34 @@ class Probe(QObject):
             ffmpeg_cmd.HW_NODE = node
             ffmpeg_cmd.HW_DRIVER = driver
             ffmpeg_cmd.HW_LOW_POWER = low
-            self.done.emit()
+            self._probe_pipe(node, driver, low)
         else:
             self._next()
+
+    def _probe_pipe(self, node: str, driver: str | None, low: bool):
+        """Кодер є. Друге питання: чи вміє GPU ще й приймати кадр, масштабувати й віддавати перегляд."""
+        proc = QProcess(self)
+        self._proc = proc
+        if driver:
+            env = QProcessEnvironment.systemEnvironment()
+            env.insert("LIBVA_DRIVER_NAME", driver)
+            proc.setProcessEnvironment(env)
+
+        def finished(code, status, p=proc):
+            if p is not self._proc:
+                return
+            self._proc = None
+            ok = code == 0 and status == QProcess.ExitStatus.NormalExit
+            err = bytes(p.readAllStandardError().data()).decode("utf-8", "replace").strip().splitlines()
+            log.info("Проба повної обробки на GPU: %s", "ПРАЦЮЄ" if ok else
+                     "ні — код %s — %s" % (code, " | ".join(err[:3])[:300]))
+            p.deleteLater()
+            ffmpeg_cmd.GPU_PIPE = ok
+            self.done.emit()
+
+        proc.finished.connect(finished)
+        proc.start("ffmpeg", ffmpeg_cmd.hw_pipe_probe_args(node, low))
+        QTimer.singleShot(_TIMEOUT_MS, lambda p=proc: self._on_timeout(p))
 
     def _on_error(self, proc: QProcess):
         if proc is self._proc and proc.error() == QProcess.ProcessError.FailedToStart:

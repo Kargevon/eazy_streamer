@@ -37,13 +37,40 @@ class CaptureSizeTest(unittest.TestCase):
     })
 
     def test_smallest_wide_frame_that_is_enough(self):
-        self.assertEqual(pick_capture(self.DEV, 480), ("MJPG", (1280, 720)))
-        self.assertEqual(pick_capture(self.DEV, 720), ("MJPG", (1280, 720)))
-        self.assertEqual(pick_capture(self.DEV, 1080), ("MJPG", (1920, 1080)))
+        self.assertEqual(pick_capture(self.DEV, 480), ("MJPG", (1280, 720), None))
+        self.assertEqual(pick_capture(self.DEV, 720), ("MJPG", (1280, 720), None))
+        # однаковий кадр є в обох форматах — беремо нестиснений, його не треба розтискати
+        self.assertEqual(pick_capture(self.DEV, 1080), ("YUYV", (1920, 1080), None))
+
+    def test_asks_30_fps_not_60_and_skips_slow_raw(self):
+        card = Device("k", "p", "hdmi", {"YUYV": [(1920, 1080)]},
+                      {("YUYV", 1920, 1080): [60.0, 50.0, 30.0, 20.0, 10.0]})
+        self.assertEqual(pick_capture(card, 1080), ("YUYV", (1920, 1080), 30))
+        self.assertEqual(pick_capture(card, 480, preview=True), ("YUYV", (1920, 1080), 10.0))
+        cam = Device("k", "p", "cam", {"YUYV": [(1280, 720)], "MJPG": [(1280, 720)]},
+                     {("YUYV", 1280, 720): [10.0], ("MJPG", 1280, 720): [30.0, 15.0]})
+        self.assertEqual(pick_capture(cam, 720), ("MJPG", (1280, 720), 30))
+
+    def test_levels(self):
+        F.HW_NODE, F.GPU_PIPE = "/dev/dri/renderD128", True
+        try:
+            card = Device("lvl", "/dev/video9", "hdmi", {"YUYV": [(1920, 1080)]})
+            full = " ".join(F.build(card, URL, F.quality("mid")))
+            self.assertIn("format=yuyv422,hwupload", full)
+            self.assertIn("scale_vaapi=w=1280:h=720", full)
+            self.assertEqual(F.lower_level(card), 1)
+            self.assertNotIn("scale_vaapi", " ".join(F.build(card, URL, F.quality("mid"))))
+            self.assertEqual(F.lower_level(card), 0)
+            self.assertIn("libx264", F.build(card, URL, F.quality("mid")))
+            cam = Device("lvl2", "/dev/video8", "cam", {"MJPG": [(1280, 720)]})
+            self.assertIn("-hwaccel", F.build(cam, URL, F.quality("mid")))
+        finally:
+            F.HW_NODE, F.GPU_PIPE = None, False
+            F.LEVEL_CAP.clear()
 
     def test_card_smaller_than_wanted_gives_its_best(self):
         dev = Device("k", "/dev/video0", "card", {"YUYV": [(720, 576), (640, 480)]})
-        self.assertEqual(pick_capture(dev, 1080), ("YUYV", (720, 576)))
+        self.assertEqual(pick_capture(dev, 1080), ("YUYV", (720, 576), None))
 
     def test_bitrate_follows_real_source_size(self):
         small = Device("k", "/dev/video0", "cam", {"MJPG": [(640, 480)]})
@@ -53,7 +80,7 @@ class CaptureSizeTest(unittest.TestCase):
         self.assertEqual(F.stream_kbit(None, F.quality("low")), 1000)
 
     def test_free_size_card(self):
-        self.assertEqual(pick_capture(Device("k", "p", "n", {"YUYV": []}), 720), ("YUYV", None))
+        self.assertEqual(pick_capture(Device("k", "p", "n", {"YUYV": []}), 720), ("YUYV", None, None))
 
 
 class NetParseTest(unittest.TestCase):

@@ -42,6 +42,7 @@ class Engine(QObject):
         self._fails = 0
         self._retry_left = 0
         self._reason = ""
+        self._level = 0
         self._cpu_prev = None
         self.label = "?"            # назва секції — для журналу
         self.stats: dict[str, str] = {}
@@ -113,8 +114,9 @@ class Engine(QObject):
 
     def _start(self):
         device, url, quality = self._want
+        self._level = ffmpeg_cmd.level_for(device) if url else 0
         try:
-            args = ffmpeg_cmd.build(device, url, quality)
+            args = ffmpeg_cmd.build(device, url, quality, self._level)
         except NotImplementedError as e:
             self._set(IDLE, str(e))
             return
@@ -134,7 +136,7 @@ class Engine(QObject):
         self._started_at = self._last_frame_at = time.monotonic()
 
         proc = QProcess(self)
-        if url and ffmpeg_cmd.HW_NODE and ffmpeg_cmd.HW_DRIVER:
+        if self._level and ffmpeg_cmd.HW_DRIVER:
             env = QProcessEnvironment.systemEnvironment()
             env.insert("LIBVA_DRIVER_NAME", ffmpeg_cmd.HW_DRIVER)
             proc.setProcessEnvironment(env)
@@ -144,12 +146,13 @@ class Engine(QObject):
         proc.errorOccurred.connect(self._on_error)
         self._proc = proc
         self._set(STARTING, "Підключення…" if url else "")
-        size = ffmpeg_cmd.source_size(device, quality.height if url else 480)
-        log.info("[%s] старт %s: джерело «%s» %s, якість %s, бітрейт %s, кодер %s", self.label,
-                 "ЕФІРУ" if url else "перегляду", device.name,
-                 "%dx%d" % size if size else "розмір як дасть карта", quality.label if url else "-",
+        fourcc, size, rate = ffmpeg_cmd.capture(device, quality.height if url else 480, preview=not url)
+        log.info("[%s] старт %s: джерело «%s» %s %s %s к/с, якість %s, бітрейт %s, обробка: %s", self.label,
+                 "ЕФІРУ" if url else "перегляду", device.name, fourcc or "-",
+                 "%dx%d" % size if size else "розмір як дасть карта", "%g" % rate if rate else "?",
+                 quality.label if url else "-",
                  "%dk" % ffmpeg_cmd.stream_kbit(device, quality) if url else "-",
-                 (ffmpeg_cmd.HW_NODE or "CPU") if url else "-")
+                 ffmpeg_cmd.LEVEL_NAMES[self._level] if url else "-")
         log.debug("[%s] ffmpeg %s", self.label, mask(" ".join(args)))
         proc.start("ffmpeg", args)
 
@@ -296,12 +299,14 @@ class Engine(QObject):
                 proc.exitCode(), "сам" if proc.exitStatus() == QProcess.ExitStatus.NormalExit else "вбитий/впав",
                 ran, "зупинка з нашого боку" if intended else "НЕСПОДІВАНО",
                 "" if intended else " — причина: " + reason)
-        if (not intended and url and ffmpeg_cmd.HW_NODE and not self._got_frame
-                and "vaapi" in bytes(self._err).decode("utf-8", "replace").lower()):
-            # Проба пройшла, а справжній потік відеокарта не потягнула — далі процесором
-            ffmpeg_cmd.HW_NODE = None
-            reason = "GPU не впорався, кодую на CPU"
-            log.error("[%s] GPU відмовив на справжньому потоці — усі стріми далі кодує CPU", self.label)
+        if (not intended and self._level and (not self._got_frame or ran < _HEALTHY_SECONDS)
+                and ffmpeg_cmd.is_hw_error(bytes(self._err).decode("utf-8", "replace"))):
+            # Проба пройшла, а це джерело GPU не потягнув — для нього спрощуємо на один крок
+            device = self._running[0] if self._running else None
+            new = ffmpeg_cmd.lower_level(device)
+            reason = "GPU не впорався з цим джерелом, спрощую обробку"
+            log.error("[%s] GPU відмовив (%s) — для цього джерела далі: %s", self.label,
+                      ffmpeg_cmd.LEVEL_NAMES[self._level], ffmpeg_cmd.LEVEL_NAMES[new])
         proc.deleteLater()
         self._proc = None
         self._running = None
