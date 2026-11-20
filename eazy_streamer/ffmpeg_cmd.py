@@ -262,7 +262,11 @@ def _input(device: Device | None, cap) -> list[str]:
     if osdep.IS_WIN:
         fourcc, size, rate = cap
         # rtbufsize: запас на випадок, коли кодер на мить відстав; типових 3 МБ не вистачає й на кадр 1080p
-        args = ["-f", "dshow", "-rtbufsize", "256M"]
+        # use_video_device_timestamps 0: час кадру беремо з годинника комп'ютера, а не з карти.
+        # Аналоговий захват 18ec:5555 ставив на кадри власний час, який ішов повільніше за
+        # справжній (швидкість 0,89), а раз на хвилину стрибав уперед секунд на 15: у вікні
+        # все гладко, а на сервері відео смикалось і завмирало. На Linux час ставить ядро.
+        args = ["-f", "dshow", "-rtbufsize", "256M", "-use_video_device_timestamps", "0"]
         if fourcc in _DSHOW_FORMATS:
             args += _DSHOW_FORMATS[fourcc]
         elif fourcc and fourcc.startswith("pix:"):
