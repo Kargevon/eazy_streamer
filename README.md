@@ -17,7 +17,7 @@
 2. Завантажте програму:
 
    ```bash
-   git clone git@github.com:Kargevon/eazy_streamer.git
+   git clone https://github.com/Kargevon/eazy_streamer.git
    ```
 
 3. Запустіть програму:
