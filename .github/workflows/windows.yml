@@ -1,0 +1,25 @@
+# Перевірка на справжній Windows: лаунчер ставить усе сам, тести, короткий ефір у локальний приймач.
+# Відеокарти й карт захоплення на цих машинах немає — перевіряється все, крім них.
+name: windows
+on:
+  push:
+    branches: [main]
+    paths: ["eazy_streamer/**", "tests/**", "eazy-streamer.bat", ".github/workflows/windows.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Лаунчер ставить Python, Qt і ffmpeg
+        shell: cmd
+        run: call eazy-streamer.bat --setup-only
+      - name: Тести
+        shell: cmd
+        run: runtime\python\python.exe -m unittest discover -s tests
+      - name: Ефір у локальний приймач
+        shell: cmd
+        run: runtime\python\python.exe tests\smoke_windows.py

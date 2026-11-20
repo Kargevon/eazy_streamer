@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QVBoxLayout, QWidget,
 )
 
-from . import awake, config, devices, engine, ffmpeg_cmd, hwenc, netwatch, updater
+from . import awake, config, devices, engine, ffmpeg_cmd, hwenc, netwatch, osdep, updater
 from . import log as logs
 from .log import log
 
@@ -506,7 +506,8 @@ class Window(QMainWindow):
         self.hw_probe.done.connect(self._show_encoder)
         self.hw_probe.start()
 
-        self.netwatch = netwatch.NetWatch(lambda: [c.engine for c in self.cards], self)
+        # Втрати в мережі читаємо утилітою ss — вона є лише на Linux
+        self.netwatch = netwatch.NetWatch(lambda: [c.engine for c in self.cards], self) if osdep.IS_LINUX else None
 
         self._load_timer = QTimer(self)
         self._load_timer.setInterval(60000)
@@ -518,6 +519,13 @@ class Window(QMainWindow):
         self._refresh_timer.timeout.connect(self.refresh_devices)
         self._refresh_timer.start()
         self.refresh_devices()
+        self.device_watcher = None
+        if osdep.IS_WIN:
+            # На Windows карти шукає ffmpeg, це довго — робимо у фоні, а не в таймері вікна
+            from . import devices_win
+            self.device_watcher = devices_win.Watcher(self)
+            self.device_watcher.found.connect(self._apply_devices)
+            self.device_watcher.start()
 
     # --- секції --------------------------------------------------------
 
@@ -636,11 +644,12 @@ class Window(QMainWindow):
 
     def _on_updated(self):
         self._shutdown()
-        os.chdir(updater.ROOT)
-        os.execv(sys.executable, [sys.executable, "-m", "eazy_streamer"])
+        osdep.restart()
 
     def _shutdown(self):
         log.info("Закриття програми")
+        if self.device_watcher is not None:
+            self.device_watcher.stop()
         self.awake.set(False)
         self._refresh_timer.stop()
         self._save_timer.stop()
@@ -654,7 +663,10 @@ class Window(QMainWindow):
 
     def refresh_devices(self):
         self._show_encoder()
-        found = devices.list_devices()
+        if not osdep.IS_WIN:
+            self._apply_devices(devices.list_devices())
+
+    def _apply_devices(self, found: list):
         keys = [d.key + "|" + d.name for d in found]
         if keys == self._device_keys:
             return
@@ -708,8 +720,9 @@ def main() -> int:
     app.setStyleSheet(STYLE)
     window = Window()
     window.show()
-    if shutil.which("ffmpeg") is None:
+    if not osdep.has_ffmpeg():
         QMessageBox.warning(window, "Eazy Streamer",
-                            "Не знайдено ffmpeg — без нього стрім не піде.\n"
-                            "Встановіть: sudo apt install ffmpeg")
+                            "Не знайдено ffmpeg — без нього стрім не піде.\n" + (
+                                "Запустіть програму через eazy-streamer.bat" if osdep.IS_WIN
+                                else "Встановіть: sudo apt install ffmpeg"))
     return app.exec()

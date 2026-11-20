@@ -1,8 +1,18 @@
-"""Оновлення через git: програма стоїть як клон репозиторію, тож «оновити» = git pull."""
+"""Оновлення з GitHub.
+
+Якщо програма стоїть як клон репозиторію і в системі є git — оновлюємось через git pull.
+Інакше (типово на Windows: архів без git) — порівнюємо файл VERSION з тим, що на GitHub,
+і розпаковуємо свіжий архів поверх програми.
+"""
 
 from __future__ import annotations
 
+import io
 import os
+import shutil
+import threading
+import urllib.request
+import zipfile
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
 
@@ -10,6 +20,9 @@ from .log import log
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _TIMEOUT_MS = 40000
+_REPO = "Kargevon/eazy_streamer"
+_VERSION_URL = "https://raw.githubusercontent.com/%s/main/VERSION" % _REPO
+_ZIP_URL = "https://github.com/%s/archive/refs/heads/main.zip" % _REPO
 
 
 def local_version() -> str:
@@ -20,8 +33,44 @@ def local_version() -> str:
         return "?"
 
 
+def uses_git() -> bool:
+    return os.path.exists(os.path.join(ROOT, ".git")) and shutil.which("git") is not None
+
+
 def can_update() -> bool:
-    return os.path.exists(os.path.join(ROOT, ".git"))
+    return True
+
+
+def _as_numbers(version: str) -> tuple:
+    return tuple(int(part) for part in version.strip().split(".") if part.isdigit())
+
+
+def _download(url: str, limit: int) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": "eazy_streamer"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        data = response.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError("файл завеликий")
+    return data
+
+
+def _unpack(archive: bytes) -> None:
+    """Розпакувати архів GitHub поверх програми. Усе в ньому лежить у теці «назва-main/»."""
+    root = os.path.realpath(ROOT)
+    with zipfile.ZipFile(io.BytesIO(archive)) as z:
+        for item in z.infolist():
+            relative = item.filename.split("/", 1)[1] if "/" in item.filename else ""
+            if not relative or item.is_dir():
+                continue
+            target = os.path.realpath(os.path.join(root, relative))
+            if not target.startswith(root + os.sep):
+                continue        # шлях веде за межі програми — такого не пишемо
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target + ".new", "wb") as f:
+                f.write(z.read(item))
+            os.replace(target + ".new", target)
+            if not os.name == "nt" and (item.external_attr >> 16) & 0o111:
+                os.chmod(target, 0o755)
 
 
 class Updater(QObject):
@@ -30,17 +79,22 @@ class Updater(QObject):
     available = Signal(str)         # версія, що чекає на GitHub
     failed = Signal(str)
     updated = Signal()
+    _from_thread = Signal(str, str)     # результат фонового завантаження -> у потік вікна
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._proc: QProcess | None = None
         self.busy = False
+        self._from_thread.connect(self._on_thread_result)
 
     def check(self):
         if self.busy or not can_update():
             return
         self.busy = True
         self.checking.emit()
+        if not uses_git():
+            self._in_background(self._check_by_download)
+            return
         self._git(["fetch", "--quiet"], self._after_fetch)
 
     def apply(self):
@@ -48,9 +102,49 @@ class Updater(QObject):
             return
         self.busy = True
         self.checking.emit()
+        if not uses_git():
+            self._in_background(self._apply_by_download)
+            return
         # --ff-only: лише «домотати» нові коміти. Якщо файли програми хтось правив
         # на місці, git відмовиться, а не зліпить щось сам
         self._git(["pull", "--ff-only", "--quiet"], self._after_pull)
+
+    # --- без git: завантаження з GitHub ---------------------------------
+
+    def _in_background(self, work):
+        # Мережа може думати довго — не тримаємо вікно, працюємо в окремому потоці
+        threading.Thread(target=work, daemon=True).start()
+
+    def _check_by_download(self):
+        try:
+            remote = _download(_VERSION_URL, 100).decode("ascii", "replace").strip().splitlines()[0][:20]
+        except Exception as e:
+            log.info("Оновлення: не вдалося прочитати версію з GitHub: %s", e)
+            self._from_thread.emit("failed", "Не вдалося зв'язатися з GitHub")
+            return
+        log.info("Оновлення: тут %s, на GitHub %s", local_version(), remote)
+        newer = _as_numbers(remote) > _as_numbers(local_version())
+        self._from_thread.emit("available" if newer else "up_to_date", remote)
+
+    def _apply_by_download(self):
+        try:
+            _unpack(_download(_ZIP_URL, 50_000_000))
+        except Exception as e:
+            log.error("Оновлення: не встановилось: %s", e)
+            self._from_thread.emit("failed", "Оновлення не встановилось: %s" % str(e)[:100])
+            return
+        log.info("Оновлення: файли замінено, версія %s", local_version())
+        self._from_thread.emit("updated", "")
+
+    def _on_thread_result(self, kind: str, text: str):
+        if kind == "available":
+            self._finish(self.available, text)
+        elif kind == "failed":
+            self._finish(self.failed, text)
+        elif kind == "updated":
+            self._finish(self.updated)
+        else:
+            self._finish(self.up_to_date)
 
     # --- кроки ---------------------------------------------------------
 

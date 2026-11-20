@@ -12,3 +12,6 @@ venv/
 build/
 dist/
 *.egg-info/
+
+# Windows: сюди лаунчер завантажує Python, Qt і ffmpeg
+runtime/

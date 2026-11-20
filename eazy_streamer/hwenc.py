@@ -1,4 +1,7 @@
-"""Проба апаратного кодування: шукаємо відеокарту, яка вміє H.264 через VAAPI."""
+"""Проба апаратного кодування: шукаємо відеокарту, яка вміє H.264.
+
+Linux — VAAPI на кожній відеокарті. Windows — NVENC, QSV, AMF по черзі.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +10,7 @@ import sys
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
 
-from . import ffmpeg_cmd
+from . import ffmpeg_cmd, osdep
 from .log import log
 
 _TIMEOUT_MS = 8000
@@ -21,6 +24,8 @@ def encoder_name() -> str:
     node = ffmpeg_cmd.HW_NODE
     if not node:
         return "CPU"
+    if ffmpeg_cmd.HW_KIND != "vaapi":
+        return {"nvenc": "GPU NVIDIA", "qsv": "GPU Intel", "amf": "GPU AMD"}.get(ffmpeg_cmd.HW_KIND, "GPU")
     try:
         with open("/sys/class/drm/%s/device/vendor" % node.rsplit("/", 1)[-1]) as f:
             return _VENDORS.get(f.read().strip().lower(), "GPU")
@@ -35,13 +40,15 @@ class Probe(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._nodes: list[tuple[str, str | None, bool]] = []
+        self._nodes: list[tuple[str, str | None, bool, str]] = []    # вузол, драйвер, low-power, кодер
         self._proc: QProcess | None = None
 
     def start(self):
         if sys.platform.startswith("linux"):
-            self._nodes = [(node, driver, low) for node in sorted(glob.glob("/dev/dri/renderD*"))
+            self._nodes = [(node, driver, low, "vaapi") for node in sorted(glob.glob("/dev/dri/renderD*"))
                            for driver, low in ffmpeg_cmd.HW_VARIANTS]
+        elif osdep.IS_WIN:
+            self._nodes = [(kind, None, False, kind) for kind in ffmpeg_cmd.WIN_ENCODERS]
         self._next()
 
     def _next(self):
@@ -49,32 +56,37 @@ class Probe(QObject):
             log.info("Проба кодера: жоден GPU не кодує — працює CPU")
             self.done.emit()
             return
-        node, driver, low = self._nodes.pop(0)
+        node, driver, low, kind = self._nodes.pop(0)
         proc = QProcess(self)
         self._proc = proc
         if driver:
             env = QProcessEnvironment.systemEnvironment()
             env.insert("LIBVA_DRIVER_NAME", driver)
             proc.setProcessEnvironment(env)
-        proc.finished.connect(lambda code, _status, n=node, d=driver, lo=low, p=proc: self._on_finished(p, n, d, lo, code))
+        proc.finished.connect(lambda code, _status, n=node, d=driver, lo=low, k=kind, p=proc:
+                              self._on_finished(p, n, d, lo, k, code))
         proc.errorOccurred.connect(lambda _e, p=proc: self._on_error(p))
-        proc.start("ffmpeg", ffmpeg_cmd.hw_probe_args(node, low))
+        proc.start(osdep.ffmpeg_path(), ffmpeg_cmd.hw_probe_args(node, low, kind))
         QTimer.singleShot(_TIMEOUT_MS, lambda p=proc: self._on_timeout(p))
 
-    def _on_finished(self, proc: QProcess, node: str, driver: str | None, low: bool, code: int):
+    def _on_finished(self, proc: QProcess, node: str, driver: str | None, low: bool, kind: str, code: int):
         if proc is not self._proc:
             return
         ok = code == 0 and proc.exitStatus() == QProcess.ExitStatus.NormalExit
         err = bytes(proc.readAllStandardError().data()).decode("utf-8", "replace").strip().splitlines()
-        log.info("Проба кодера %s driver=%s low_power=%s: %s", node, driver or "auto", low,
+        log.info("Проба кодера %s (%s) driver=%s low_power=%s: %s", node, kind, driver or "auto", low,
                  "КОДУЄ" if ok else "ні — код %s — %s" % (code, " | ".join(err[:3])[:300]))
         self._proc = None
         proc.deleteLater()
         if ok:
+            ffmpeg_cmd.HW_KIND = kind
             ffmpeg_cmd.HW_NODE = node
             ffmpeg_cmd.HW_DRIVER = driver
             ffmpeg_cmd.HW_LOW_POWER = low
-            self._probe_pipe(node, driver, low)
+            if kind == "vaapi":
+                self._probe_pipe(node, driver, low)
+            else:
+                self.done.emit()
         else:
             self._next()
 
@@ -100,7 +112,7 @@ class Probe(QObject):
             self.done.emit()
 
         proc.finished.connect(finished)
-        proc.start("ffmpeg", ffmpeg_cmd.hw_pipe_probe_args(node, low))
+        proc.start(osdep.ffmpeg_path(), ffmpeg_cmd.hw_pipe_probe_args(node, low))
         QTimer.singleShot(_TIMEOUT_MS, lambda p=proc: self._on_timeout(p))
 
     def _on_error(self, proc: QProcess):

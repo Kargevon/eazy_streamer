@@ -62,7 +62,7 @@ class CaptureSizeTest(unittest.TestCase):
         self.assertIn("framestep=2,", " ".join(F.build(fast, URL, F.quality("mid"))))
 
     def test_levels(self):
-        F.HW_NODE, F.GPU_PIPE = "/dev/dri/renderD128", True
+        F.HW_KIND, F.HW_NODE, F.GPU_PIPE = "vaapi", "/dev/dri/renderD128", True
         try:
             card = Device("lvl", "/dev/video9", "hdmi", {"YUYV": [(1920, 1080)]})
             full = " ".join(F.build(card, URL, F.quality("mid")))
@@ -75,8 +75,20 @@ class CaptureSizeTest(unittest.TestCase):
             cam = Device("lvl2", "/dev/video8", "cam", {"MJPG": [(1280, 720)]})
             self.assertIn("-hwaccel", F.build(cam, URL, F.quality("mid")))
         finally:
-            F.HW_NODE, F.GPU_PIPE = None, False
+            F.HW_KIND, F.HW_NODE, F.GPU_PIPE = None, None, False
             F.LEVEL_CAP.clear()
+
+    def test_windows_encoders(self):
+        for kind, codec in (("nvenc", "h264_nvenc"), ("qsv", "h264_qsv"), ("amf", "h264_amf")):
+            F.HW_KIND = F.HW_NODE = kind
+            try:
+                args = F.build(None, URL, F.quality("mid"))
+                self.assertIn(codec, args)
+                self.assertNotIn("-vaapi_device", args)
+                self.assertNotIn("hwupload", " ".join(args))
+                self.assertIn(codec, F.hw_probe_args(kind, False, kind))
+            finally:
+                F.HW_KIND = F.HW_NODE = None
 
     def test_card_smaller_than_wanted_gives_its_best(self):
         dev = Device("k", "/dev/video0", "card", {"YUYV": [(720, 576), (640, 480)]})
@@ -91,6 +103,50 @@ class CaptureSizeTest(unittest.TestCase):
 
     def test_free_size_card(self):
         self.assertEqual(pick_capture(Device("k", "p", "n", {"YUYV": []}), 720), ("YUYV", None, None))
+
+
+class WindowsDevicesTest(unittest.TestCase):
+    """Зразки виводу ffmpeg записано з документації та пам'яті, не з живої машини."""
+
+    NEW = (
+        '[dshow @ 000001] "USB3.0 UHD" (video)\n'
+        '[dshow @ 000001]   Alternative name "@device_pnp_\\\\?\\usb#vid_345f&pid_2130#global"\n'
+        '[dshow @ 000001] "OBS Virtual Camera" (none)\n'
+        '[dshow @ 000001] "Мікрофон (USB Audio)" (audio)\n'
+        '[dshow @ 000001]   Alternative name "@device_cm_{33D9}\\wave_{1}"\n'
+        '[dshow @ 000001] "USB2.0 PC CAMERA" (video)\n'
+        '[dshow @ 000001]   Alternative name "@device_pnp_\\\\?\\usb#vid_18ec&pid_5555#global"\n'
+        'dummy: Immediate exit requested\n')
+    OLD = (
+        '[dshow @ 0001] DirectShow video devices (some may be both video and audio devices)\n'
+        '[dshow @ 0001]  "Integrated Webcam"\n'
+        '[dshow @ 0001]     Alternative name "@device_pnp_cam"\n'
+        '[dshow @ 0001] DirectShow audio devices\n'
+        '[dshow @ 0001]  "Microphone"\n'
+        '[dshow @ 0001]     Alternative name "@device_cm_mic"\n')
+    OPTIONS = (
+        '[dshow @ 0001] DirectShow video device options (from video devices)\n'
+        '[dshow @ 0001]  Pin "Capture" (alternative pin name "0")\n'
+        '[dshow @ 0001]   pixel_format=yuyv422  min s=1920x1080 fps=5 max s=1920x1080 fps=60\n'
+        '[dshow @ 0001]   pixel_format=yuyv422  min s=1920x1080 fps=5 max s=1920x1080 fps=60 (tv, bt709/bt709/unknown, mpeg)\n'
+        '[dshow @ 0001]   vcodec=mjpeg  min s=1280x720 fps=10 max s=1280x720 fps=30.0003\n'
+        '[dshow @ 0001]   pixel_format=bgr24  min s=640x480 fps=30 max s=640x480 fps=30\n')
+
+    def test_device_list_new_and_old_format(self):
+        from eazy_streamer.devices_win import parse_devices
+        self.assertEqual(parse_devices(self.NEW), [
+            ("USB3.0 UHD", "@device_pnp_\\\\?\\usb#vid_345f&pid_2130#global"),
+            ("USB2.0 PC CAMERA", "@device_pnp_\\\\?\\usb#vid_18ec&pid_5555#global")])
+        self.assertEqual(parse_devices(self.OLD), [("Integrated Webcam", "@device_pnp_cam")])
+
+    def test_options(self):
+        from eazy_streamer.devices_win import parse_options
+        formats, rates = parse_options(self.OPTIONS)
+        self.assertEqual(formats, {"YUYV": [(1920, 1080)], "MJPG": [(1280, 720)], "pix:bgr24": [(640, 480)]})
+        self.assertEqual(rates[("YUYV", 1920, 1080)], [60.0, 30.0, 25.0, 10.0, 5.0])
+        card = Device("k", "video=x", "hdmi", formats, rates)
+        self.assertEqual(pick_capture(card, 1080), ("YUYV", (1920, 1080), 30))
+        self.assertEqual(pick_capture(card, 720)[:2], ("MJPG", (1280, 720)))
 
 
 class NetParseTest(unittest.TestCase):

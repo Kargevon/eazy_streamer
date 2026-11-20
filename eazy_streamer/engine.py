@@ -8,7 +8,7 @@ import time
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
 from PySide6.QtGui import QImage
 
-from . import ffmpeg_cmd
+from . import ffmpeg_cmd, osdep
 from .devices import Device
 from .log import log, mask
 
@@ -90,7 +90,7 @@ class Engine(QObject):
         self._tick.stop()
         if self._proc is not None and not self._stopping:
             self._stopping = True
-            self._proc.terminate()
+            osdep.ask_to_quit(self._proc)
 
     def wait_stopped(self):
         proc = self._proc
@@ -137,7 +137,7 @@ class Engine(QObject):
         self._started_at = self._last_frame_at = time.monotonic()
 
         proc = QProcess(self)
-        if self._level and ffmpeg_cmd.HW_DRIVER:
+        if self._level and ffmpeg_cmd.HW_DRIVER and ffmpeg_cmd.HW_KIND == "vaapi":
             env = QProcessEnvironment.systemEnvironment()
             env.insert("LIBVA_DRIVER_NAME", ffmpeg_cmd.HW_DRIVER)
             proc.setProcessEnvironment(env)
@@ -155,7 +155,7 @@ class Engine(QObject):
                  "%dk" % ffmpeg_cmd.stream_kbit(device, quality) if url else "-",
                  ffmpeg_cmd.LEVEL_NAMES[self._level] if url else "-")
         log.debug("[%s] ffmpeg %s", self.label, mask(" ".join(args)))
-        proc.start("ffmpeg", args)
+        proc.start(osdep.ffmpeg_path(), args)
 
     def _stop(self):
         proc = self._proc
@@ -163,7 +163,7 @@ class Engine(QObject):
             return
         self._stopping = True
         log.info("[%s] зупиняю ffmpeg (pid %s)", self.label, proc.processId())
-        proc.terminate()
+        osdep.ask_to_quit(proc)
         QTimer.singleShot(_STOP_GRACE_MS, lambda: self._kill_if_same(proc))
 
     def _kill_if_same(self, proc: QProcess):
@@ -295,7 +295,8 @@ class Engine(QObject):
         self._running = None
         self._want = None
         log.error("[%s] ffmpeg не запустився взагалі", self.label)
-        self._set(IDLE, "Не знайдено ffmpeg. Встановіть: sudo apt install ffmpeg")
+        self._set(IDLE, "Не знайдено ffmpeg. Запустіть програму через eazy-streamer.bat" if osdep.IS_WIN
+                  else "Не знайдено ffmpeg. Встановіть: sudo apt install ffmpeg")
 
     def _on_finished(self, *_):
         proc = self.sender()

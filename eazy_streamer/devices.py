@@ -42,7 +42,7 @@ class Device:
 
 def list_devices() -> list[Device]:
     if not sys.platform.startswith("linux"):
-        return []
+        return []       # на Windows карти шукає devices_win.Watcher, не блокуючи вікно
     links = _stable_links()
     found = []
     for node in sorted(glob.glob("/dev/video*"), key=_node_number):

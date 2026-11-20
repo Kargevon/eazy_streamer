@@ -10,6 +10,8 @@ import re
 import subprocess
 import sys
 
+from . import osdep
+
 log = logging.getLogger("eazy")
 
 MAX_FILE_BYTES = 4_000_000
@@ -35,7 +37,8 @@ def setup() -> None:
         # На п'яти стрімах цього вистачає приблизно на тиждень історії
         handler = logging.handlers.RotatingFileHandler(
             log_path(), maxBytes=MAX_FILE_BYTES, backupCount=FILES - 1, encoding="utf-8")
-        os.chmod(log_path(), 0o600)
+        if not osdep.IS_WIN:
+            os.chmod(log_path(), 0o600)
     except OSError:
         handler = logging.StreamHandler()       # нема куди писати — хоч у термінал
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(message)s"))
@@ -62,9 +65,11 @@ def system_summary() -> None:
             if line.split("=")[0].split(":")[0] in keys:
                 log.info("  %s", line.strip())
     models = {ln.split(":", 1)[1].strip() for ln in _lines("/proc/cpuinfo") if ln.startswith("model name")}
-    log.info("  CPU: %s, ядер: %s", ", ".join(models) or "?", os.cpu_count())
+    log.info("  CPU: %s, ядер: %s", ", ".join(models) or platform.processor() or "?", os.cpu_count())
+    log.info("  ffmpeg: %s", osdep.ffmpeg_path())
     try:
-        out = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=5).stdout
+        out = subprocess.run([osdep.ffmpeg_path(), "-version"], capture_output=True, text=True,
+                             timeout=10, **osdep.NO_WINDOW).stdout
         log.info("  %s", out.splitlines()[0] if out else "ffmpeg не відповів")
     except (OSError, subprocess.SubprocessError) as e:
         log.error("  ffmpeg не запускається: %s", e)
