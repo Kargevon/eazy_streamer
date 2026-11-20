@@ -90,6 +90,8 @@ def _key(device: Device | None) -> str:
 
 def level_for(device: Device | None) -> int:
     top = 2 if (HW_NODE and GPU_PIPE) else 1 if HW_NODE else 0
+    if _key(device) == TEST_KEY:
+        top = min(top, 1)       # тестову картинку малює CPU — ганяти її через GPU лише дорожче
     return min(top, LEVEL_CAP.get(_key(device), 2))
 
 
