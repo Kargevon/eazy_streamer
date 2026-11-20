@@ -14,6 +14,9 @@ def _fail_loudly(kind, value, trace):
     sys.__excepthook__(kind, value, trace)
 
 
+# Консоль Windows типово не в UTF-8 і падає на кирилиці
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 sys.excepthook = _fail_loudly
 print("::notice title=Python::%s %s%%0Asys.path: %s" % (sys.version.split()[0], sys.executable, sys.path), flush=True)
 
