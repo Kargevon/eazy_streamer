@@ -389,7 +389,11 @@ class Card(QFrame):
             if "loss" in net:
                 parts.append("втрати %.1f %%" % net["loss"])
             slow = stats.get("speed", "1x").rstrip("x")
-            if slow.replace(".", "", 1).isdigit() and float(slow) < 0.9:
+            if self.engine.stalled:
+                parts.append("кадри не йдуть")
+                tone = "wait"
+            elif (time.monotonic() - self.engine.live_since > 60
+                    and slow.replace(".", "", 1).isdigit() and float(slow) < 0.9):
                 parts.append("ПК не встигає")
                 tone = "wait"
             if net.get("loss", 0) > 2:
@@ -572,6 +576,20 @@ class Window(QMainWindow):
         for i, card in enumerate(self.cards):
             card.setMinimumWidth(min(CARD_MIN_W, max(260, width)))
             self.grid.addWidget(card, i // cols, i % cols)
+
+    if osdep.IS_WIN:
+        def nativeEvent(self, event_type, message):
+            # Windows розсилає WM_DEVICECHANGE усім вікнам, коли щось підключили чи від'єднали.
+            # Це дешевше, ніж постійно питати ffmpeg про список карт.
+            try:
+                if self.device_watcher is not None and bytes(event_type) == b"windows_generic_MSG":
+                    import ctypes
+                    from ctypes import wintypes
+                    if wintypes.MSG.from_address(int(message)).message == 0x0219:
+                        self.device_watcher.devices_changed()
+            except Exception:
+                pass
+            return super().nativeEvent(event_type, message)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

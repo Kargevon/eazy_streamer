@@ -49,6 +49,9 @@ class Engine(QObject):
         self.net: dict[str, float] = {}     # заповнює netwatch: rtt (мс), loss (%)
         self.src_fps: float | None = None   # справжня частота кадрів джерела
         self._fps_window: list[float] = []  # к/с у кожному 2-секундному звіті від минулого запису
+        self._preview_frames = 0            # кадрів перегляду від минулого запису в журнал
+        self._size_prev = 0
+        self.stalled = False                # ефір іде, а нових кадрів немає
         self._rate_prev = None
         self._reports = 0
         self._err_line = bytearray()
@@ -127,6 +130,9 @@ class Engine(QObject):
         self._err_line.clear()
         self._pending = {}
         self.stats = {}
+        self._preview_frames = 0
+        self._size_prev = 0
+        self.stalled = False
         self.net = {}
         self.src_fps = None
         self._rate_prev = None
@@ -184,6 +190,7 @@ class Engine(QObject):
         last = bytes(self._buf[(count - 1) * size:count * size])
         del self._buf[:count * size]
         self._last_frame_at = time.monotonic()
+        self._preview_frames += count
         if not self._got_frame:
             self._got_frame = True
             log.info("[%s] перший кадр через %.1f с після старту", self.label,
@@ -227,7 +234,10 @@ class Engine(QObject):
         if out_fps is not None:
             self._fps_window.append(out_fps)
         speed = s.get("speed", "").rstrip("x")
-        slow = speed.replace(".", "", 1).isdigit() and float(speed) < 0.95
+        # «Швидкість» у ffmpeg рахується від самого старту, тому першу хвилину вона нижча за 1
+        # просто через час на підключення. Справжня біда — коли кадри перестали йти зовсім.
+        self.stalled = out_fps is not None and out_fps < 1
+        slow = self.stalled or (self._reports > 30 and speed.replace(".", "", 1).isdigit() and float(speed) < 0.9)
         lossy = self.net.get("loss", 0) > 1
         cpu = self._cpu_percent()
         # Щоразу писати — це 25 МБ на добу. Першу хвилину ефіру пишемо раз на 10 с,
@@ -236,6 +246,12 @@ class Engine(QObject):
         if self._reports % every != 1 and not slow and not lossy:
             return
         window, self._fps_window = self._fps_window, []
+        try:
+            size = int(s.get("total_size", "0"))
+        except ValueError:
+            size = self._size_prev
+        sent, self._size_prev = size - self._size_prev, size
+        preview, self._preview_frames = self._preview_frames, 0
         spread = "?"
         if window:
             spread = "по 2 с: мін %.1f, макс %.1f" % (min(window), max(window))
@@ -243,27 +259,34 @@ class Engine(QObject):
                 spread += ", усі: " + " ".join("%.1f" % f for f in window)
         log.log(30 if slow or lossy else 20,
                 "[%s] хід: кадрів %s, в ефір %s к/с (%s), %s, викинуто %s, подвоєно %s, "
-                "швидкість %s, CPU %s, мережа: затримка %s мс, повторів %s%%, усього повторно %s байт",
+                "швидкість %s, CPU %s, мережа: затримка %s мс, повторів %s%%, усього повторно %s байт; "
+                "від минулого запису: на сервер пішло %d КБ, у перегляд %d кадрів%s",
                 self.label, s.get("frame", "?"), "%.1f" % out_fps if out_fps is not None else "?",
                 spread, s.get("bitrate", "?"),
                 s.get("drop_frames", "?"), s.get("dup_frames", "?"), s.get("speed", "?"), cpu,
                 "%.0f" % self.net["rtt"] if "rtt" in self.net else "?",
                 "%.2f" % self.net["loss"] if "loss" in self.net else "?",
-                "%d" % self.net["retrans_total"] if "retrans_total" in self.net else "?")
+                "%d" % self.net["retrans_total"] if "retrans_total" in self.net else "?",
+                sent // 1024, preview, " — ЕФІР ЗАВМЕР" if self.stalled else "")
 
     def _cpu_percent(self) -> str:
         """Скільки одного ядра з'їв цей ffmpeg від минулого звіту (100% = ядро повністю)."""
         try:
-            with open("/proc/%d/stat" % self._proc.processId()) as f:
-                fields = f.read().rsplit(")", 1)[1].split()
-            ticks = int(fields[11]) + int(fields[12])       # utime + stime
+            if osdep.IS_WIN:
+                used = osdep.process_cpu_seconds(self._proc.processId())
+                if used is None:
+                    return "?"
+            else:
+                with open("/proc/%d/stat" % self._proc.processId()) as f:
+                    fields = f.read().rsplit(")", 1)[1].split()
+                used = (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")     # utime + stime
         except (OSError, ValueError, IndexError, AttributeError):
             return "?"
         now, prev = time.monotonic(), self._cpu_prev
-        self._cpu_prev = (now, ticks)
+        self._cpu_prev = (now, used)
         if not prev or now <= prev[0]:
             return "?"
-        return "%.0f%%" % ((ticks - prev[1]) / os.sysconf("SC_CLK_TCK") / (now - prev[0]) * 100)
+        return "%.0f%%" % ((used - prev[1]) / (now - prev[0]) * 100)
 
     def _on_ffmpeg_line(self, line: str):
         key, sep, value = line.partition("=")

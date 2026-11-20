@@ -91,11 +91,15 @@ _cpu_prev: tuple[int, int] | None = None
 def _cpu_busy() -> str:
     """Завантаження всіх ядер разом від минулого виклику, у відсотках."""
     global _cpu_prev
-    first = (_lines("/proc/stat") or [""])[0].split()
-    if len(first) < 6 or first[0] != "cpu":
-        return "?"
-    nums = [int(x) for x in first[1:9]]
-    total, idle = sum(nums), nums[3] + nums[4]      # idle + iowait
+    ticks = osdep.system_cpu_ticks()
+    if ticks is not None:
+        total, idle = ticks[1], ticks[1] - ticks[0]
+    else:
+        first = (_lines("/proc/stat") or [""])[0].split()
+        if len(first) < 6 or first[0] != "cpu":
+            return "?"
+        nums = [int(x) for x in first[1:9]]
+        total, idle = sum(nums), nums[3] + nums[4]      # idle + iowait
     prev, _cpu_prev = _cpu_prev, (total, idle)
     if not prev or total == prev[0]:
         return "?"
@@ -104,6 +108,9 @@ def _cpu_busy() -> str:
 
 def load_line() -> str:
     """Навантаження машини одним рядком — пишемо періодично, поки йдуть стріми."""
+    if osdep.IS_WIN:
+        free = osdep.memory_free_mb()
+        return "CPU зайнятий на %s | вільної пам'яті %s МБ" % (_cpu_busy(), "?" if free is None else free)
     load = (_lines("/proc/loadavg") or ["?"])[0].split()[:3]
     free = next((ln.split()[1] for ln in _lines("/proc/meminfo") if ln.startswith("MemAvailable")), "0")
     temps = []

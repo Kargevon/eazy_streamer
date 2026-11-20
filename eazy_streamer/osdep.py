@@ -37,6 +37,60 @@ def home_dir() -> str | None:
     return ROOT
 
 
+def _filetime(ft) -> int:
+    return (ft.dwHighDateTime << 32) | ft.dwLowDateTime
+
+
+def system_cpu_ticks() -> tuple[int, int] | None:
+    """Windows: (зайнято, усього) процесорного часу всіх ядер від старту системи."""
+    if not IS_WIN:
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    idle, kernel, user = wintypes.FILETIME(), wintypes.FILETIME(), wintypes.FILETIME()
+    if not ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
+        return None
+    total = _filetime(kernel) + _filetime(user)        # час ядра вже містить простій
+    return total - _filetime(idle), total
+
+
+def process_cpu_seconds(pid: int) -> float | None:
+    """Windows: скільки процесорного часу з'їв процес від свого старту."""
+    if not IS_WIN or not pid:
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    handle = kernel32.OpenProcess(0x1000, False, int(pid))      # лише право спитати про час
+    if not handle:
+        return None
+    made, gone, kernel, user = (wintypes.FILETIME() for _ in range(4))
+    ok = kernel32.GetProcessTimes(wintypes.HANDLE(handle), ctypes.byref(made), ctypes.byref(gone),
+                                  ctypes.byref(kernel), ctypes.byref(user))
+    kernel32.CloseHandle(wintypes.HANDLE(handle))
+    return (_filetime(kernel) + _filetime(user)) / 1e7 if ok else None
+
+
+def memory_free_mb() -> int | None:
+    if not IS_WIN:
+        return None
+    import ctypes
+
+    class Status(ctypes.Structure):
+        _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong)] + [
+            (name, ctypes.c_ulonglong) for name in ("total", "free", "page_total", "page_free",
+                                                    "virtual_total", "virtual_free", "extended")]
+
+    status = Status()
+    status.length = ctypes.sizeof(Status)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        return None
+    return int(status.free // (1024 * 1024))
+
+
 def ffmpeg_path() -> str:
     """Спершу ffmpeg, який лаунчер поклав поруч із програмою, далі системний."""
     override = os.environ.get("EAZY_FFMPEG")

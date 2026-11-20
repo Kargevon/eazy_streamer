@@ -10,7 +10,12 @@ from . import osdep
 from .devices import Device
 from .log import log
 
-_PERIOD_MS = 5000
+import time
+
+# Кожне опитування — це запуск ffmpeg.exe, який антивірус щоразу перевіряє. Тому опитуємо
+# не по колу, а коли Windows сама повідомила, що пристрої змінились; раз на хвилину — про всяк випадок
+_PERIOD_MS = 60000
+_SETTLE_MS = 1500
 _TIMEOUT_MS = 15000
 
 _FORMAT_KEYS = {("vcodec", "mjpeg"): "MJPG", ("pixel_format", "yuyv422"): "YUYV",
@@ -79,6 +84,11 @@ class Watcher(QObject):
         self._timer = QTimer(self)
         self._timer.setInterval(_PERIOD_MS)
         self._timer.timeout.connect(self.poll)
+        self._poke = QTimer(self)
+        self._poke.setSingleShot(True)
+        self._poke.setInterval(_SETTLE_MS)      # Windows шле кілька повідомлень на одне підключення
+        self._poke.timeout.connect(self.poll)
+        self._started = 0.0
 
     def start(self):
         self._timer.start()
@@ -87,10 +97,16 @@ class Watcher(QObject):
     def stop(self):
         self._timer.stop()
 
+    def devices_changed(self):
+        """Windows повідомила про зміну пристроїв (WM_DEVICECHANGE)."""
+        self._poke.start()
+
     def poll(self):
         if self._busy:
+            self._poke.start()          # зайняті — спитаємо ще раз трохи згодом
             return
         self._busy = True
+        self._started = time.monotonic()
         self._run(["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"], self._on_list)
 
     def _on_list(self, text: str):
@@ -109,6 +125,7 @@ class Watcher(QObject):
                 del self._known[alt]
                 del self._absent[alt]
             self._busy = False
+            log.debug("Опитування карт тривало %.1f с", time.monotonic() - self._started)
             self.found.emit(list(self._known.values()))
             return
         name, alt = new.pop(0)
