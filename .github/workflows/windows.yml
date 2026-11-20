@@ -19,7 +19,7 @@ jobs:
         run: call eazy-streamer.bat --setup-only
       - name: Тести
         shell: cmd
-        run: runtime\python\python.exe -m unittest discover -s tests
+        run: runtime\python\python.exe -m unittest discover -s tests -v
       - name: Ефір у локальний приймач
         shell: cmd
         run: runtime\python\python.exe tests\smoke_windows.py

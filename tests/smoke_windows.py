@@ -3,6 +3,20 @@
 Запускає GitHub Actions. Підсумок друкує рядками ::notice:: — їх видно в результатах перевірки.
 """
 
+import sys
+import traceback
+
+
+def _fail_loudly(kind, value, trace):
+    """Журнал перевірки без входу в GitHub не прочитати, тож помилку кладемо у видимий підсумок."""
+    text = "".join(traceback.format_exception(kind, value, trace))[-1800:]
+    print("::error title=Збій сценарію::%s" % text.replace("%", "%25").replace("\r", "").replace("\n", "%0A"), flush=True)
+    sys.__excepthook__(kind, value, trace)
+
+
+sys.excepthook = _fail_loudly
+print("::notice title=Python::%s %s%%0Asys.path: %s" % (sys.version.split()[0], sys.executable, sys.path), flush=True)
+
 import os
 import subprocess
 import sys
