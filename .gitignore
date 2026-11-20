@@ -1,0 +1,14 @@
+# Налаштування з посиланнями на стріми містять ключі — у git їм не місце
+config.json
+streams.json
+*.local.json
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
