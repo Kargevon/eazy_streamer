@@ -60,19 +60,23 @@ if LAUNCHER:
     # Запускач стартує програму на справжньому екрані Windows — так перевіряється і він,
     # і те, що з Qt не викинуто потрібного для звичайного вікна
     os.environ.pop("QT_QPA_PLATFORM", None)
-    started = subprocess.Popen([LAUNCHER]).wait(timeout=30)
+    # EazyStreamer.exe — це сама програма: вона працює, поки відкрите вікно. Даємо їй 15 с,
+    # дивимось у журнал і закриваємо. Якщо вона вийшла раніше сама — це збій запуску.
+    program = subprocess.Popen([LAUNCHER])
     time.sleep(15)
+    started = program.poll()            # None = досі працює, як і має бути
     try:
         early = open(L.log_path(), encoding="utf-8", errors="replace").read()
     except OSError:
         early = ""
-    subprocess.run(["taskkill", "/F", "/IM", "pythonw.exe"], capture_output=True)
+    program.kill()
+    program.wait(timeout=10)
     window_up = "Екран:" in early       # цей рядок пишеться вже після створення вікна
-    note("Запускач", "код виходу: %s\nвікно створилось: %s\nрядків у журналі: %d\n%s" % (
+    note("Запускач", "вийшла сама (None = ні, працювала): %s\nвікно створилось: %s\nрядків у журналі: %d\n%s" % (
         started, window_up, early.count("\n"),
         "\n".join(l[24:200] for l in early.splitlines() if "CRITICAL" in l or "Traceback" in l or "Error" in l)[:900]))
-    if started != 0:
-        problems.append("запускач завершився з кодом %s" % started)
+    if started is not None:
+        problems.append("програма через EazyStreamer.exe сама завершилась з кодом %s" % started)
     if not window_up:
         problems.append("програма через запускач не дійшла до створення вікна")
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
