@@ -493,7 +493,7 @@ class Window(QMainWindow):
     # --- джерела і налаштування ----------------------------------------
 
     def _show_encoder(self):
-        self.encoder_note.setText("Кодує відеокарта" if ffmpeg_cmd.HW_NODE else "Кодує процесор")
+        self.encoder_note.setText("Кодує " + hwenc.encoder_name())
         self.encoder_note.setToolTip(
             "Відео стискає відеокарта — процесор майже вільний" if ffmpeg_cmd.HW_NODE else
             "Відеокарта не вміє стискати відео або немає драйвера — працює процесор")

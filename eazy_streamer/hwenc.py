@@ -12,6 +12,21 @@ from . import ffmpeg_cmd
 _TIMEOUT_MS = 8000
 
 
+_VENDORS = {"0x8086": "графіка Intel", "0x1002": "Radeon", "0x10de": "NVIDIA"}
+
+
+def encoder_name() -> str:
+    """Хто кодує, людською мовою: щоб «відеокарта» не плутали з дискретною."""
+    node = ffmpeg_cmd.HW_NODE
+    if not node:
+        return "процесор"
+    try:
+        with open("/sys/class/drm/%s/device/vendor" % node.rsplit("/", 1)[-1]) as f:
+            return _VENDORS.get(f.read().strip().lower(), "відеокарта")
+    except OSError:
+        return "відеокарта"
+
+
 class Probe(QObject):
     """Перебирає відеокарти і драйвери по черзі; першу пару, що впоралась, запам'ятовує."""
 
