@@ -8,7 +8,7 @@ import sys
 import time
 
 from PySide6.QtCore import QRect, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QImage, QPainter
+from PySide6.QtGui import QColor, QIcon, QImage, QPainter
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QScrollArea,
@@ -733,7 +733,16 @@ def main() -> int:
     logs.setup()
     logs.system_summary()
     log.info("Eazy Streamer %s, папка %s", updater.local_version(), updater.ROOT)
+    if osdep.IS_WIN:
+        # Без власного «імені застосунку» Windows показує на панелі завдань іконку Python,
+        # бо EazyStreamer.exe — це він і є
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Kargevon.EazyStreamer")
+        except Exception:
+            pass
     app = QApplication(sys.argv)
+    app.setWindowIcon(QIcon(os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.png")))
     app.setApplicationName("Eazy Streamer")
     app.setStyleSheet(STYLE)
     window = Window()
