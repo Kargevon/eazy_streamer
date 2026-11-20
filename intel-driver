@@ -1,0 +1,50 @@
+#!/bin/sh
+# Ставить повний (невільний) драйвер Intel для апаратного кодування.
+# Запуск: sudo ./intel-driver
+#
+# Що робить, по кроках:
+#   1. вмикає розділ non-free у джерелах Debian (копія старого файла лишається поруч, *.eazy.bak);
+#   2. apt update;
+#   3. ставить intel-media-va-driver-non-free (він замінює вільний intel-media-va-driver);
+#   4. показує, чи відеокарта тепер кодує.
+# Змінна SOURCES_DIR — лише для перевірки скрипта на копіях файлів.
+set -e
+
+ETC=${SOURCES_DIR:-/etc/apt}
+CODENAME=$(. /etc/os-release; echo "$VERSION_CODENAME")
+
+enable_non_free() {
+    # Старий формат: рядки «deb … trixie main non-free-firmware»
+    list="$ETC/sources.list"
+    if [ -f "$list" ] && grep -qE "^deb(-src)? .*[[:space:]]$CODENAME(-[a-z]+)?[[:space:]].*main" "$list"; then
+        cp -n "$list" "$list.eazy.bak"
+        sed -i -E "/^deb(-src)? .*[[:space:]]$CODENAME(-[a-z]+)?[[:space:]]/ { /[[:space:]]non-free([[:space:]]|\$)/! s/[[:space:]]main([[:space:]]|\$)/ main non-free\\1/ }" "$list"
+    fi
+    # Новий формат: файл debian.sources з рядком «Components: main …»
+    new="$ETC/sources.list.d/debian.sources"
+    if [ -f "$new" ]; then
+        cp -n "$new" "$new.eazy.bak"
+        sed -i -E "/^Components:/ { /[[:space:]]non-free([[:space:]]|\$)/! s/\$/ non-free/ }" "$new"
+    fi
+}
+
+if [ -n "$SOURCES_DIR" ]; then
+    enable_non_free
+    exit 0
+fi
+
+if [ "$(id -u)" != 0 ]; then
+    echo "Потрібні права адміністратора. Запусти так:  sudo ./intel-driver"
+    exit 1
+fi
+cd "$(dirname "$(readlink -f "$0")")"
+
+echo "== 1/4 Вмикаю розділ non-free"
+enable_non_free
+echo "== 2/4 Оновлюю список пакетів"
+apt-get update
+echo "== 3/4 Ставлю драйвер"
+apt-get install -y intel-media-va-driver-non-free
+echo "== 4/4 Перевіряю"
+./diag | grep -E "^пакети|КОДУЄ" || echo "Жодна відеокарта не кодує — сфотографуй вивід ./diag"
+echo "Готово. Перезапусти Eazy Streamer і глянь у шапку."
