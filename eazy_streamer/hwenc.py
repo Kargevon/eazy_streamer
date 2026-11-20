@@ -12,19 +12,19 @@ from . import ffmpeg_cmd
 _TIMEOUT_MS = 8000
 
 
-_VENDORS = {"0x8086": "графіка Intel", "0x1002": "Radeon", "0x10de": "NVIDIA"}
+_VENDORS = {"0x8086": "GPU Intel", "0x1002": "GPU Radeon", "0x10de": "GPU NVIDIA"}
 
 
 def encoder_name() -> str:
-    """Хто кодує, людською мовою: щоб «відеокарта» не плутали з дискретною."""
+    """Хто кодує: CPU або який саме GPU."""
     node = ffmpeg_cmd.HW_NODE
     if not node:
-        return "процесор"
+        return "CPU"
     try:
         with open("/sys/class/drm/%s/device/vendor" % node.rsplit("/", 1)[-1]) as f:
-            return _VENDORS.get(f.read().strip().lower(), "відеокарта")
+            return _VENDORS.get(f.read().strip().lower(), "GPU")
     except OSError:
-        return "відеокарта"
+        return "GPU"
 
 
 class Probe(QObject):

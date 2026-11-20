@@ -495,8 +495,8 @@ class Window(QMainWindow):
     def _show_encoder(self):
         self.encoder_note.setText("Кодує " + hwenc.encoder_name())
         self.encoder_note.setToolTip(
-            "Відео стискає відеокарта — процесор майже вільний" if ffmpeg_cmd.HW_NODE else
-            "Відеокарта не вміє стискати відео або немає драйвера — працює процесор")
+            "Відео стискає GPU — CPU майже вільний" if ffmpeg_cmd.HW_NODE else
+            "GPU не вміє стискати відео або немає драйвера — працює CPU")
 
     # --- оновлення -----------------------------------------------------
 
