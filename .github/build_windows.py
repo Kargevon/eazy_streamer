@@ -17,7 +17,10 @@ import zipfile
 
 PYTHON = "3.12.10"
 PYSIDE = "6.8.3"
-FFMPEG = "9.1"
+# 7.1 — та сама гілка, що в Debian 13, на якій усе міряли. Новіші збірки вимагають
+# найсвіжішого драйвера NVIDIA (9.1 відмовила на драйвері з NVENC API 13.0), а нам треба,
+# щоб працювало на любе голубе
+FFMPEG = "7.1.1"
 PYTHON_URL = "https://www.python.org/ftp/python/%s/python-%s-embed-amd64.zip" % (PYTHON, PYTHON)
 FFMPEG_URL = "https://github.com/GyanD/codexffmpeg/releases/download/%s/ffmpeg-%s-essentials_build.zip" % (FFMPEG, FFMPEG)
 
@@ -122,6 +125,9 @@ def pack():
     version = open(os.path.join(ROOT, "VERSION")).read().strip()
     if not os.path.exists(os.path.join(DIST, "EazyStreamer.exe")):
         sys.exit("у теці немає EazyStreamer.exe — запускач не зібрано")
+    for leftover in ("logs", "data"):
+        if os.path.exists(os.path.join(DIST, leftover)):
+            sys.exit("у теці збірки лишилось %s — перевірка писала не туди" % leftover)
     for folder, dirs, _files in os.walk(DIST):
         for d in [d for d in dirs if d == "__pycache__"]:
             shutil.rmtree(os.path.join(folder, d))     # сліди перевірки в реліз не йдуть

@@ -74,6 +74,7 @@ class Watcher(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._known: dict[str, Device] = {}     # стале ім'я -> карта з уже зчитаними форматами
+        self._absent: dict[str, int] = {}       # скільки опитувань поспіль карти не видно
         self._busy = False
         self._timer = QTimer(self)
         self._timer.setInterval(_PERIOD_MS)
@@ -99,9 +100,16 @@ class Watcher(QObject):
 
     def _query(self, present, new):
         if not new:
-            self._known = {alt: self._known[alt] for _name, alt in present if alt in self._known}
+            seen = {alt for _name, alt in present}
+            # Карта, яку саме відкривають, може на мить зникнути зі списку. Один пропуск прощаємо:
+            # інакше секція скидається посеред запуску
+            self._absent = {alt: self._absent.get(alt, 0) + 1 for alt in self._known if alt not in seen}
+            gone = [alt for alt, misses in self._absent.items() if misses >= 2]
+            for alt in gone:
+                del self._known[alt]
+                del self._absent[alt]
             self._busy = False
-            self.found.emit([self._known[alt] for _name, alt in present if alt in self._known])
+            self.found.emit(list(self._known.values()))
             return
         name, alt = new.pop(0)
 

@@ -27,6 +27,7 @@ import tempfile
 import time
 
 TMP = tempfile.mkdtemp(prefix="eazy-smoke-")
+os.environ["EAZY_HOME"] = TMP          # журнал і налаштування перевірки — не в теку, що піде в реліз
 os.environ["APPDATA"] = os.path.join(TMP, "appdata")
 os.environ["LOCALAPPDATA"] = os.path.join(TMP, "localappdata")
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -91,6 +92,23 @@ if "libx264" not in encoders:
 code, text = run([FFMPEG, "-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"])
 from eazy_streamer.devices_win import parse_devices  # noqa: E402
 note("dshow", "розібрано: %s\nсирий вивід:\n%s" % (parse_devices(text), text[-900:]))
+
+# Справжні вхідні параметри DirectShow на карті, якої немає: ffmpeg має відповісти
+# «карту не знайдено», а не «не розумію параметр». Так ловимо параметри, які нова версія
+# ffmpeg перестала приймати, — з тестовою картинкою цього не видно.
+from eazy_streamer.devices import Device  # noqa: E402
+ghost = Device("ghost", "video=No Such Capture Card", "ghost",
+               {"MJPG": [(640, 480)], "YUYV": [(1920, 1080)]},
+               {("MJPG", 640, 480): [30.0, 25.0, 10.0], ("YUYV", 1920, 1080): [60.0, 30.0, 10.0]})
+replies = []
+for label, args in (("перегляд", F.build(ghost, None, F.quality("low"))),
+                    ("ефір CPU", F.build(ghost, URL, F.quality("high"), 0))):
+    code, text = run([FFMPEG] + args)
+    reply = " | ".join(l for l in text.splitlines() if l.strip())[-300:]
+    replies.append("%s: %s" % (label, reply))
+    if any(bad in text for bad in ("Error parsing options", "Unrecognized option", "cannot be applied", "Option not found")):
+        problems.append("ffmpeg не приймає параметри входу (%s): %s" % (label, reply))
+note("Параметри DirectShow", "\n".join(replies))
 
 listener = subprocess.Popen([FFMPEG, "-hide_banner", "-loglevel", "error", "-listen", "1", "-i", URL,
                              "-c", "copy", "-f", "flv", "-y", OUT], stderr=subprocess.PIPE)

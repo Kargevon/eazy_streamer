@@ -15,6 +15,28 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NO_WINDOW = {"creationflags": 0x08000000} if IS_WIN else {}
 
 
+def home_dir() -> str | None:
+    """Тека, куди на Windows кладемо журнал і налаштування: поруч із програмою.
+
+    Так їх легко знайти і забрати разом із текою. Якщо в теку програми писати не можна
+    (наприклад, її поклали в Program Files) — повертаємо None, і все їде в профіль користувача.
+    Linux сюди не заходить: там журнал і налаштування лежать за правилами системи.
+    """
+    override = os.environ.get("EAZY_HOME")      # для перевірок: щоб не смітити в теку збірки
+    if override:
+        return override
+    if not IS_WIN:
+        return None
+    probe = os.path.join(ROOT, ".write-test")
+    try:
+        with open(probe, "w"):
+            pass
+        os.remove(probe)
+    except OSError:
+        return None
+    return ROOT
+
+
 def ffmpeg_path() -> str:
     """Спершу ffmpeg, який лаунчер поклав поруч із програмою, далі системний."""
     override = os.environ.get("EAZY_FFMPEG")

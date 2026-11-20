@@ -16,3 +16,7 @@ dist/
 # Windows: сюди лаунчер завантажує Python, Qt і ffmpeg
 runtime/
 build/
+
+# Windows: журнал і налаштування лежать поруч із програмою
+logs/
+data/

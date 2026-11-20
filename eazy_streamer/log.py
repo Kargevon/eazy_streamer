@@ -9,6 +9,7 @@ import platform
 import re
 import subprocess
 import sys
+import threading
 
 from . import osdep
 
@@ -19,6 +20,9 @@ FILES = 5
 
 
 def log_dir() -> str:
+    home = osdep.home_dir()
+    if home:
+        return os.path.join(home, "logs")       # Windows: поруч із програмою
     if sys.platform.startswith("win"):
         base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
     else:
@@ -67,9 +71,15 @@ def system_summary() -> None:
     models = {ln.split(":", 1)[1].strip() for ln in _lines("/proc/cpuinfo") if ln.startswith("model name")}
     log.info("  CPU: %s, ядер: %s", ", ".join(models) or platform.processor() or "?", os.cpu_count())
     log.info("  ffmpeg: %s", osdep.ffmpeg_path())
+    # У фоні: на Windows антивірус при першому запуску перевіряє ffmpeg.exe секунд десять,
+    # і весь цей час вікно не з'являлося б
+    threading.Thread(target=_log_ffmpeg_version, daemon=True).start()
+
+
+def _log_ffmpeg_version() -> None:
     try:
         out = subprocess.run([osdep.ffmpeg_path(), "-version"], capture_output=True, text=True,
-                             timeout=10, **osdep.NO_WINDOW).stdout
+                             timeout=60, **osdep.NO_WINDOW).stdout
         log.info("  %s", out.splitlines()[0] if out else "ffmpeg не відповів")
     except (OSError, subprocess.SubprocessError) as e:
         log.error("  ffmpeg не запускається: %s", e)

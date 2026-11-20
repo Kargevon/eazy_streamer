@@ -113,11 +113,11 @@ Kargevon змушував Claude упарюватись на оптимізац�
 
 **Де журнал?**
 Debian: `~/.local/state/eazy_streamer/eazy_streamer.log`.
-Windows: `%LOCALAPPDATA%\eazy_streamer\eazy_streamer.log`.
+Windows: тека `logs` поруч з `EazyStreamer.exe`.
 Розмір журналу не більший за 20 МБ.
 Ключів стрімів у журналі немає.
 
 **Де налаштування?**
 Debian: `~/.config/eazy_streamer/streams.json`.
-Windows: `%APPDATA%\eazy_streamer\streams.json`.
+Windows: тека `data` поруч з `EazyStreamer.exe`.
 Файл містить посилання з ключами. Не передавайте його іншим.

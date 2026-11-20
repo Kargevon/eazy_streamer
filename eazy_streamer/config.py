@@ -1,4 +1,7 @@
-"""Налаштування секцій. Лежать поза папкою програми: у посиланнях є ключі стрімів."""
+"""Налаштування секцій. У посиланнях є ключі стрімів, тому файл не для чужих очей.
+
+Linux: ~/.config/eazy_streamer/. Windows: тека data поруч із програмою.
+"""
 
 from __future__ import annotations
 
@@ -6,8 +9,10 @@ import json
 import os
 import sys
 
+from . import osdep
 
-def config_path() -> str:
+
+def _profile_path() -> str:
     if sys.platform.startswith("win"):
         base = os.environ.get("APPDATA") or os.path.expanduser("~")
     else:
@@ -15,12 +20,26 @@ def config_path() -> str:
     return os.path.join(base, "eazy_streamer", "streams.json")
 
 
+def config_path() -> str:
+    home = osdep.home_dir()
+    return os.path.join(home, "data", "streams.json") if home else _profile_path()
+
+
+def _read() -> dict:
+    # Спершу нове місце; якщо там порожньо — старе в профілі (версії до 0.5.3 на Windows)
+    for path in dict.fromkeys((config_path(), _profile_path())):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict):
+            return data
+    return {}
+
+
 def load() -> list[dict]:
-    try:
-        with open(config_path(), encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return []
+    data = _read()
     streams = data.get("streams") if isinstance(data, dict) else None
     if not isinstance(streams, list):
         return []
@@ -28,11 +47,7 @@ def load() -> list[dict]:
 
 
 def load_settings() -> dict:
-    try:
-        with open(config_path(), encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return {}
+    data = _read()
     settings = data.get("settings") if isinstance(data, dict) else None
     return settings if isinstance(settings, dict) else {}
 

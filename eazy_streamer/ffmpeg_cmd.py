@@ -251,7 +251,7 @@ def _input(device: Device | None, cap) -> list[str]:
         return ["-re", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=%d" % STREAM_FPS]
     if sys.platform.startswith("linux"):
         fourcc, size, rate = cap
-        args = ["-f", "v4l2", "-thread_queue_size", "64"]
+        args = ["-f", "v4l2"]
         if fourcc in _INPUT_FORMATS:
             args += ["-input_format", _INPUT_FORMATS[fourcc]]
         if size:
@@ -262,7 +262,7 @@ def _input(device: Device | None, cap) -> list[str]:
     if osdep.IS_WIN:
         fourcc, size, rate = cap
         # rtbufsize: запас на випадок, коли кодер на мить відстав; типових 3 МБ не вистачає й на кадр 1080p
-        args = ["-f", "dshow", "-rtbufsize", "256M", "-thread_queue_size", "64"]
+        args = ["-f", "dshow", "-rtbufsize", "256M"]
         if fourcc in _DSHOW_FORMATS:
             args += _DSHOW_FORMATS[fourcc]
         elif fourcc and fourcc.startswith("pix:"):
@@ -300,6 +300,8 @@ def explain(stderr_tail: str, url: str | None) -> str:
         ("no such file or directory", "карту не знайдено"),
         ("cannot open video device", "карта не відкривається"),
         ("could not find video device", "карту не знайдено"),
+        ("error parsing options", "ця версія ffmpeg не приймає команду програми — оновіть програму"),
+        ("unrecognized option", "ця версія ffmpeg не приймає команду програми — оновіть програму"),
         ("could not run graph", "карта зайнята іншою програмою"),
         ("could not set video options", "карта не приймає цей формат"),
         ("failed to resolve hostname", "немає інтернету або невірна адреса сервера"),
