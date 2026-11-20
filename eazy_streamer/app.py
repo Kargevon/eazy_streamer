@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 import time
@@ -14,7 +15,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QVBoxLayout, QWidget,
 )
 
-from . import config, devices, engine, ffmpeg_cmd
+from . import config, devices, engine, ffmpeg_cmd, hwenc, updater
 
 CARD_MIN_W, CARD_MAX_W = 380, 620
 REFRESH_MS = 3000
@@ -37,6 +38,8 @@ QPushButton:disabled { color: #6b7280; }
 QPushButton:checked { background: #3b6fd4; border-color: #5b8dee; color: white; font-weight: 600; }
 QPushButton#add { background: #3b6fd4; border-color: #5b8dee; color: white; font-weight: 600; padding: 9px 18px; }
 QPushButton#add:hover { background: #4a7fe6; }
+QPushButton#update[fresh="true"] { background: #2e9d5b; border-color: #37b86b; color: white; font-weight: 600; }
+QPushButton#update[fresh="true"]:hover { background: #37b86b; }
 QPushButton#close { border: none; background: transparent; color: #7d8594; font-size: 18px; padding: 2px 8px; }
 QPushButton#close:hover { color: #ff6b6b; }
 QPushButton#go { font-size: 16px; font-weight: 700; padding: 11px; color: white; border: none; }
@@ -359,16 +362,32 @@ class Window(QMainWindow):
         self._devices: list[devices.Device] = []
         self._cols = 0
 
-        title = QLabel("Стріми")
+        title = QLabel("Версія %s" % updater.local_version())
         title.setObjectName("title")
+        self.update_btn = QPushButton("Перевірити оновлення")
+        self.update_btn.setObjectName("update")
+        self.update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_btn.setVisible(updater.can_update())
+        self.update_btn.clicked.connect(self._on_update_clicked)
+        self.update_note = QLabel()
+        self.update_note.setObjectName("hint")
+        self.encoder_note = QLabel()
+        self.encoder_note.setObjectName("hint")
+        self._update_ready = False
+        self._asked = False         # чи людина сама натиснула «перевірити»
+        self._applying = False
         add_btn = QPushButton("+  Додати стрім")
         add_btn.setObjectName("add")
         add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         add_btn.clicked.connect(lambda: self.add_card({}))
         top = QHBoxLayout()
         top.setContentsMargins(16, 12, 16, 4)
+        top.setSpacing(12)
         top.addWidget(title)
+        top.addWidget(self.update_btn)
+        top.addWidget(self.update_note)
         top.addStretch(1)
+        top.addWidget(self.encoder_note)
         top.addWidget(add_btn)
 
         self.grid_host = QWidget()
@@ -394,6 +413,22 @@ class Window(QMainWindow):
 
         for item in config.load() or [{}]:
             self.add_card(item, save=False)
+
+        self.updater = updater.Updater(self)
+        self.updater.checking.connect(self._on_update_checking)
+        self.updater.up_to_date.connect(self._on_up_to_date)
+        self.updater.available.connect(self._on_update_available)
+        self.updater.failed.connect(self._on_update_failed)
+        self.updater.updated.connect(self._on_updated)
+        self._daily = QTimer(self)
+        self._daily.setInterval(24 * 60 * 60 * 1000)
+        self._daily.timeout.connect(self.updater.check)
+        self._daily.start()
+        QTimer.singleShot(1500, self.updater.check)
+
+        self.hw_probe = hwenc.Probe(self)
+        self.hw_probe.done.connect(self._show_encoder)
+        self.hw_probe.start()
 
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setInterval(REFRESH_MS)
@@ -457,7 +492,69 @@ class Window(QMainWindow):
 
     # --- джерела і налаштування ----------------------------------------
 
+    def _show_encoder(self):
+        self.encoder_note.setText("Кодує відеокарта" if ffmpeg_cmd.HW_NODE else "Кодує процесор")
+        self.encoder_note.setToolTip(
+            "Відео стискає відеокарта — процесор майже вільний" if ffmpeg_cmd.HW_NODE else
+            "Відеокарта не вміє стискати відео або немає драйвера — працює процесор")
+
+    # --- оновлення -----------------------------------------------------
+
+    def _set_update_button(self, text: str, fresh: bool, enabled: bool = True):
+        self._update_ready = fresh
+        self.update_btn.setText(text)
+        self.update_btn.setEnabled(enabled)
+        self.update_btn.setProperty("fresh", "true" if fresh else "false")
+        self.update_btn.style().unpolish(self.update_btn)
+        self.update_btn.style().polish(self.update_btn)
+
+    def _on_update_clicked(self):
+        if not self._update_ready:
+            self._asked = True
+            self.updater.check()
+            return
+        live = [c for c in self.cards if c.live]
+        question = "Встановити оновлення? Програма перезапуститься."
+        if live:
+            question = "В ефірі стрімів: %d. Оновлення їх зупинить і перезапустить програму. Продовжити?" % len(live)
+        if _ask(self, question):
+            self._applying = True
+            self.updater.apply()
+
+    def _on_update_checking(self):
+        self.update_btn.setEnabled(False)
+        self.update_note.setText("Оновлюю…" if self._applying else "Перевіряю…")
+
+    def _on_up_to_date(self):
+        self._set_update_button("Перевірити оновлення", fresh=False)
+        self.update_note.setText("Оновлень немає" if self._asked else "")
+        self._asked = False
+
+    def _on_update_available(self, version: str):
+        self._set_update_button("Оновити до %s" % version if version else "Оновити", fresh=True)
+        self.update_note.setText("Є нова версія")
+        self._asked = False
+
+    def _on_update_failed(self, text: str):
+        self._set_update_button(self.update_btn.text(), fresh=self._update_ready)
+        # Фонова перевірка мовчить: немає інтернету — не привід лякати людину
+        self.update_note.setText(text if (self._asked or self._applying) else "")
+        self._asked = self._applying = False
+
+    def _on_updated(self):
+        self._shutdown()
+        os.chdir(updater.ROOT)
+        os.execv(sys.executable, [sys.executable, "-m", "eazy_streamer"])
+
+    def _shutdown(self):
+        self._refresh_timer.stop()
+        self._save_timer.stop()
+        self.save_now()
+        for card in self.cards:
+            card.stop()
+
     def refresh_devices(self):
+        self._show_encoder()
         found = devices.list_devices()
         keys = [d.key + "|" + d.name for d in found]
         if keys == self._device_keys:
@@ -481,11 +578,7 @@ class Window(QMainWindow):
         if live and not _ask(self, "В ефірі стрімів: %d. Зупинити їх і закрити програму?" % len(live)):
             event.ignore()
             return
-        self._refresh_timer.stop()
-        self._save_timer.stop()
-        self.save_now()
-        for card in self.cards:
-            card.stop()
+        self._shutdown()
         event.accept()
 
 

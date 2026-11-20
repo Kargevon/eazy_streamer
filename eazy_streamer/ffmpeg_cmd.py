@@ -30,6 +30,29 @@ QUALITIES = (
 )
 DEFAULT_QUALITY = "mid"
 
+# Вузол відеокарти (/dev/dri/renderD…), який пройшов пробу кодування.
+# None — кодуємо процесором. Виставляє hwenc.Probe, скидає engine при збої.
+HW_NODE: str | None = None
+
+
+def hw_probe_args(node: str) -> list[str]:
+    """Короткий пробний запуск: чи вміє ця відеокарта кодувати H.264."""
+    return ["-hide_banner", "-loglevel", "error", "-vaapi_device", node,
+            "-f", "lavfi", "-i", "color=size=1280x720:rate=30", "-frames:v", "10",
+            "-vf", "format=nv12,hwupload"] + _hw_encoder(2500) + ["-f", "null", "-"]
+
+
+def _hw_encoder(kbit: int) -> list[str]:
+    return ["-c:v", "h264_vaapi", "-b:v", "%dk" % kbit, "-maxrate", "%dk" % kbit,
+            "-bufsize", "%dk" % (kbit * 2), "-bf", "0", "-g", str(STREAM_FPS * 2)]
+
+
+def _cpu_encoder(kbit: int) -> list[str]:
+    return ["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
+            "-profile:v", "main",
+            "-b:v", "%dk" % kbit, "-maxrate", "%dk" % kbit, "-bufsize", "%dk" % (kbit * 2),
+            "-g", str(STREAM_FPS * 2), "-keyint_min", str(STREAM_FPS * 2), "-sc_threshold", "0"]
+
 
 def quality(key: str) -> Quality:
     for q in QUALITIES:
@@ -49,7 +72,10 @@ def build(device: Device | None, url: str | None, q: Quality) -> list[str]:
     url=None — лише перегляд. Інакше одна карта йде і в ефір, і в перегляд:
     відкрити карту двома процесами не можна, тому перегляд — другий вихід.
     """
+    hw = HW_NODE if url else None
     args = ["-hide_banner", "-nostdin", "-loglevel", "error"]
+    if hw:
+        args += ["-vaapi_device", hw]
     args += _input(device, q.height if url else 480)
 
     preview = "fps=%d,scale=%d:%d:force_original_aspect_ratio=decrease:flags=fast_bilinear," \
@@ -62,16 +88,12 @@ def build(device: Device | None, url: str | None, q: Quality) -> list[str]:
 
     # Тиха звукова доріжка: частина серверів і плеєрів не приймає потік без звуку
     args += ["-f", "lavfi", "-i", "anullsrc=channel_layout=mono:sample_rate=44100"]
-    air = "fps=%d,scale=w=-2:h='min(%d,ih)':flags=bilinear,format=yuv420p" % (STREAM_FPS, q.height)
+    air = "fps=%d,scale=w=-2:h='min(%d,ih)':flags=bilinear,%s" % (
+        STREAM_FPS, q.height, "format=nv12,hwupload" if hw else "format=yuv420p")
     graph = "[0:v]split=2[a][p];[a]%s[air];[p]%s[pv]" % (air, preview)
-    rate = "%dk" % q.kbit
+    args += ["-filter_complex", graph, "-map", "[air]", "-map", "1:a"]
+    args += _hw_encoder(q.kbit) if hw else _cpu_encoder(q.kbit)
     args += [
-        "-filter_complex", graph,
-        "-map", "[air]", "-map", "1:a",
-        "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
-        "-profile:v", "main",
-        "-b:v", rate, "-maxrate", rate, "-bufsize", "%dk" % (q.kbit * 2),
-        "-g", str(STREAM_FPS * 2), "-keyint_min", str(STREAM_FPS * 2), "-sc_threshold", "0",
         "-c:a", "aac", "-b:a", "32k",
         "-shortest", "-flvflags", "no_duration_filesize",
         "-f", "flv", url.strip(),

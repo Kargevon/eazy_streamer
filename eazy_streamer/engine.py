@@ -168,6 +168,11 @@ class Engine(QObject):
         reason = ffmpeg_cmd.explain(bytes(self._err).decode("utf-8", "replace"), url)
         ran = time.monotonic() - self._started_at
         intended = self._stopping
+        if (not intended and url and ffmpeg_cmd.HW_NODE and not self._got_frame
+                and "vaapi" in bytes(self._err).decode("utf-8", "replace").lower()):
+            # Проба пройшла, а справжній потік відеокарта не потягнула — далі процесором
+            ffmpeg_cmd.HW_NODE = None
+            reason = "відеокарта не впоралась, кодую процесором"
         proc.deleteLater()
         self._proc = None
         self._running = None
