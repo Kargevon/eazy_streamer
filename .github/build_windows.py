@@ -140,5 +140,17 @@ def pack():
         os.path.getsize(os.path.join(DIST, "EazyStreamer.exe")) / 1e3, digest))
 
 
+def _fail_loudly(kind, value, trace):
+    """Журнал збірки без входу в GitHub не прочитати — помилку кладемо у видимий підсумок."""
+    import traceback
+    text = "".join(traceback.format_exception(kind, value, trace))[-1800:]
+    print("::error title=Збій складання::%s" % text.replace("%", "%25").replace("\r", "").replace("\n", "%0A"), flush=True)
+    sys.__excepthook__(kind, value, trace)
+
+
 if __name__ == "__main__":
+    # Консоль Windows типово не в UTF-8 і падає на кирилиці
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    sys.excepthook = _fail_loudly
     {"assemble": assemble, "pack": pack}[sys.argv[1]]()
