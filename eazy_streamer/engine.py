@@ -45,6 +45,10 @@ class Engine(QObject):
         self._cpu_prev = None
         self.label = "?"            # назва секції — для журналу
         self.stats: dict[str, str] = {}
+        self.net: dict[str, float] = {}     # заповнює netwatch: rtt (мс), loss (%)
+        self.src_fps: float | None = None   # справжня частота кадрів джерела
+        self._rate_prev = None
+        self._reports = 0
         self._err_line = bytearray()
         self._pending: dict[str, str] = {}
         self._quiet_since = 0.0
@@ -68,6 +72,12 @@ class Engine(QObject):
         self._fails = 0
         self._retry_left = 0
         self._apply()
+
+    def pid(self) -> int:
+        """PID ffmpeg, що зараз в ефірі; 0 — ефіру немає."""
+        if self._proc is None or not (self._running and self._running[1]):
+            return 0
+        return int(self._proc.processId())
 
     def is_live_wanted(self) -> bool:
         return bool(self._want and self._want[1])
@@ -114,6 +124,10 @@ class Engine(QObject):
         self._err_line.clear()
         self._pending = {}
         self.stats = {}
+        self.net = {}
+        self.src_fps = None
+        self._rate_prev = None
+        self._reports = 0
         self._cpu_prev = None
         self._stopping = False
         self._got_frame = False
@@ -191,6 +205,38 @@ class Engine(QObject):
             if line:
                 self._on_ffmpeg_line(line)
 
+    def _on_report(self):
+        """Звіт ffmpeg раз на 2 с: рахуємо частоту кадрів джерела і пишемо в журнал."""
+        s = self.stats
+        try:
+            cur = (time.monotonic(), int(s["frame"]), int(s["dup_frames"]), int(s["drop_frames"]))
+        except (KeyError, ValueError):
+            return
+        prev, self._rate_prev = self._rate_prev, cur
+        out_fps = None
+        if prev and cur[0] > prev[0]:
+            dt = cur[0] - prev[0]
+            out_fps = (cur[1] - prev[1]) / dt
+            # вихід = джерело + подвоєні − викинуті, звідси джерело
+            self.src_fps = max(0.0, ((cur[1] - prev[1]) - (cur[2] - prev[2]) + (cur[3] - prev[3])) / dt)
+        self._reports += 1
+        speed = s.get("speed", "").rstrip("x")
+        slow = speed.replace(".", "", 1).isdigit() and float(speed) < 0.95
+        lossy = self.net.get("loss", 0) > 1
+        cpu = self._cpu_percent()
+        # Щоразу писати — це 25 МБ на добу. Пишемо кожен п'ятий звіт і кожен поганий
+        if self._reports % 5 != 1 and not slow and not lossy:
+            return
+        log.log(30 if slow or lossy else 20,
+                "[%s] хід: кадрів %s, в ефір %s к/с, джерело %s к/с, %s, викинуто %s, подвоєно %s, "
+                "швидкість %s, CPU %s, мережа: затримка %s мс, повторів %s%%, усього повторно %s байт",
+                self.label, s.get("frame", "?"), "%.1f" % out_fps if out_fps is not None else "?",
+                "%.1f" % self.src_fps if self.src_fps is not None else "?", s.get("bitrate", "?"),
+                s.get("drop_frames", "?"), s.get("dup_frames", "?"), s.get("speed", "?"), cpu,
+                "%.0f" % self.net["rtt"] if "rtt" in self.net else "?",
+                "%.2f" % self.net["loss"] if "loss" in self.net else "?",
+                "%d" % self.net["retrans_total"] if "retrans_total" in self.net else "?")
+
     def _cpu_percent(self) -> str:
         """Скільки одного ядра з'їв цей ffmpeg від минулого звіту (100% = ядро повністю)."""
         try:
@@ -211,11 +257,7 @@ class Engine(QObject):
             self._pending[key] = value.strip()
             if key == "progress":
                 self.stats, self._pending = self._pending, {}
-                log.info("[%s] хід: кадрів %s, %s к/с, %s, пропущено %s, подвоєно %s, швидкість %s, CPU %s",
-                         self.label, self.stats.get("frame", "?"), self.stats.get("fps", "?"),
-                         self.stats.get("bitrate", "?"), self.stats.get("drop_frames", "?"),
-                         self.stats.get("dup_frames", "?"), self.stats.get("speed", "?"),
-                         self._cpu_percent())
+                self._on_report()
             return
         self._err += line.encode("utf-8") + b"\n"
         del self._err[:-4000]

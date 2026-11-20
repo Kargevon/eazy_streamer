@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QVBoxLayout, QWidget,
 )
 
-from . import config, devices, engine, ffmpeg_cmd, hwenc, updater
+from . import config, devices, engine, ffmpeg_cmd, hwenc, netwatch, updater
 from . import log as logs
 from .log import log
 
@@ -330,7 +330,8 @@ class Card(QFrame):
 
         state, text = self.engine.state, ""
         tone = "calm"
-        have_device = self.device() is not None
+        dev_now = self.device()
+        have_device = dev_now is not None
         if self._note:
             text, tone = self._note, "bad"
         elif not self.source_key:
@@ -340,15 +341,27 @@ class Card(QFrame):
             tone = "wait" if live else "calm"
         elif state == engine.LIVE:
             text, tone = "● В ефірі  %s" % _clock(time.monotonic() - self.engine.live_since), "ok"
-            stats = self.engine.stats
+            q = ffmpeg_cmd.quality(self.quality_key())
+            real = ffmpeg_cmd.out_height(dev_now, q)
+            parts = ["%dp" % real if real >= q.height else "%dp — більше джерело не дає" % real]
+            if self.engine.src_fps is not None:
+                parts.append("%.0f к/с" % self.engine.src_fps)
+            stats, net = self.engine.stats, self.engine.net
             if stats.get("bitrate", "").endswith("kbits/s"):
                 try:
-                    text += "  ·  %.1f Мбіт/с" % (float(stats["bitrate"][:-7]) / 1000)
+                    parts.append("%.1f Мбіт/с" % (float(stats["bitrate"][:-7]) / 1000))
                 except ValueError:
                     pass
-                slow = stats.get("speed", "1x").rstrip("x")
-                if slow.replace(".", "", 1).isdigit() and float(slow) < 0.9:
-                    text, tone = text + "  ·  ПК не встигає", "wait"
+            if "loss" in net:
+                parts.append("втрати %.1f %%" % net["loss"])
+            slow = stats.get("speed", "1x").rstrip("x")
+            if slow.replace(".", "", 1).isdigit() and float(slow) < 0.9:
+                parts.append("ПК не встигає")
+                tone = "wait"
+            if net.get("loss", 0) > 2:
+                parts.append("мережа губить")
+                tone = "wait"
+            text += "\n" + "  ·  ".join(parts)
         elif state == engine.STARTING:
             text, tone = ("Підключення до сервера…", "wait") if live else ("Відкриваю джерело…", "calm")
         elif state == engine.RETRY:
@@ -451,6 +464,8 @@ class Window(QMainWindow):
         self.hw_probe = hwenc.Probe(self)
         self.hw_probe.done.connect(self._show_encoder)
         self.hw_probe.start()
+
+        self.netwatch = netwatch.NetWatch(lambda: [c.engine for c in self.cards], self)
 
         self._load_timer = QTimer(self)
         self._load_timer.setInterval(15000)

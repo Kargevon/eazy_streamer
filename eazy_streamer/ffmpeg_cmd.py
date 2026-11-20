@@ -89,6 +89,12 @@ def stream_kbit(device: Device | None, q: Quality) -> int:
     return min(q.kbit, max(fitting) if fitting else QUALITIES[0].kbit)
 
 
+def out_height(device: Device | None, q: Quality) -> int:
+    """Висота кадру, що справді піде в ефір: картинку не розтягуємо понад джерело."""
+    size = source_size(device, q.height)
+    return min(q.height, size[1]) if size else q.height
+
+
 def build(device: Device | None, url: str | None, q: Quality) -> list[str]:
     """Аргументи ffmpeg (без самого слова ffmpeg).
 
@@ -98,8 +104,8 @@ def build(device: Device | None, url: str | None, q: Quality) -> list[str]:
     hw = HW_NODE if url else None
     args = ["-hide_banner", "-nostdin", "-loglevel", "warning", "-nostats"]
     if url:
-        # Раз на 5 с ffmpeg звітує в stderr: кадри, бітрейт, пропуски, швидкість
-        args += ["-progress", "pipe:2", "-stats_period", "5"]
+        # Раз на 2 с ffmpeg звітує в stderr: кадри, бітрейт, пропуски, швидкість
+        args += ["-progress", "pipe:2", "-stats_period", "2"]
     if hw:
         args += ["-vaapi_device", hw]
     args += _input(device, q.height if url else 480)
@@ -114,12 +120,15 @@ def build(device: Device | None, url: str | None, q: Quality) -> list[str]:
 
     # Тиха звукова доріжка: частина серверів і плеєрів не приймає потік без звуку
     args += ["-f", "lavfi", "-i", "anullsrc=channel_layout=mono:sample_rate=44100"]
-    air = "fps=%d,scale=w=-2:h='min(%d,ih)':flags=bilinear,%s" % (
-        STREAM_FPS, q.height, "format=nv12,hwupload" if hw else "format=yuv420p")
+    # Частоту кадрів вирівнює сам вихід (-r … -fps_mode cfr), а не фільтр: тоді ffmpeg
+    # рахує подвоєні й викинуті кадри, і з них видно справжню частоту джерела
+    air = "scale=w=-2:h='min(%d,ih)':flags=bilinear,%s" % (
+        q.height, "format=nv12,hwupload" if hw else "format=yuv420p")
     graph = "[0:v]split=2[a][p];[a]%s[air];[p]%s[pv]" % (air, preview)
     args += ["-filter_complex", graph, "-map", "[air]", "-map", "1:a"]
     kbit = stream_kbit(device, q)
     args += _hw_encoder(kbit, HW_LOW_POWER) if hw else _cpu_encoder(kbit)
+    args += ["-r", str(STREAM_FPS), "-fps_mode", "cfr"]
     args += [
         "-c:a", "aac", "-b:a", "32k",
         "-shortest", "-flvflags", "no_duration_filesize",

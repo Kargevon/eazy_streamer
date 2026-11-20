@@ -56,5 +56,18 @@ class CaptureSizeTest(unittest.TestCase):
         self.assertEqual(pick_capture(Device("k", "p", "n", {"YUYV": []}), 720), ("YUYV", None))
 
 
+class NetParseTest(unittest.TestCase):
+    def test_reads_sent_retrans_and_rtt_per_pid(self):
+        from eazy_streamer.netwatch import parse
+        text = (
+            'ESTAB 0 0 10.0.0.2:42730 1.2.3.4:8443 users:(("ffmpeg",pid=501,fd=5))\n'
+            '\t cubic rto:204 rtt:38.5/4.1 mss:1400 bytes_sent:1000000 bytes_retrans:2500 bytes_acked:99\n'
+            'ESTAB 0 0 10.0.0.2:42731 1.2.3.5:8443 users:(("ffmpeg",pid=502,fd=5))\n'
+            '\t cubic rto:204 rtt:0.6/0.9 bytes_sent:777 bytes_acked:778\n'
+            'ESTAB 0 0 10.0.0.2:22 9.9.9.9:5555\n'
+            '\t cubic rtt:1/1 bytes_sent:5\n')
+        self.assertEqual(parse(text), {501: (1000000, 2500, 38.5), 502: (777, 0, 0.6)})
+
+
 if __name__ == "__main__":
     unittest.main()
