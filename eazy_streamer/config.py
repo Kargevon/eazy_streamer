@@ -27,7 +27,17 @@ def load() -> list[dict]:
     return [s for s in streams if isinstance(s, dict)]
 
 
-def save(streams: list[dict]) -> None:
+def load_settings() -> dict:
+    try:
+        with open(config_path(), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    settings = data.get("settings") if isinstance(data, dict) else None
+    return settings if isinstance(settings, dict) else {}
+
+
+def save(streams: list[dict], settings: dict | None = None) -> None:
     path = config_path()
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     tmp = path + ".tmp"
@@ -35,7 +45,7 @@ def save(streams: list[dict]) -> None:
     # потім заміна — щоб збій живлення не лишив половину файла.
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump({"streams": streams}, f, ensure_ascii=False, indent=2)
+        json.dump({"streams": streams, "settings": settings or {}}, f, ensure_ascii=False, indent=2)
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)

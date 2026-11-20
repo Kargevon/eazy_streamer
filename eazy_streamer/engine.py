@@ -48,6 +48,7 @@ class Engine(QObject):
         self.stats: dict[str, str] = {}
         self.net: dict[str, float] = {}     # заповнює netwatch: rtt (мс), loss (%)
         self.src_fps: float | None = None   # справжня частота кадрів джерела
+        self._fps_window: list[float] = []  # к/с у кожному 2-секундному звіті від минулого запису
         self._rate_prev = None
         self._reports = 0
         self._err_line = bytearray()
@@ -223,6 +224,8 @@ class Engine(QObject):
             # в ефір іде рівно стільки кадрів, скільки дало джерело (якщо не проріджуємо 60 -> 30)
             self.src_fps = max(0.0, ((cur[1] - prev[1]) - (cur[2] - prev[2]) + (cur[3] - prev[3])) / dt)
         self._reports += 1
+        if out_fps is not None:
+            self._fps_window.append(out_fps)
         speed = s.get("speed", "").rstrip("x")
         slow = speed.replace(".", "", 1).isdigit() and float(speed) < 0.95
         lossy = self.net.get("loss", 0) > 1
@@ -230,11 +233,14 @@ class Engine(QObject):
         # Щоразу писати — це 25 МБ на добу. Пишемо кожен п'ятий звіт і кожен поганий
         if self._reports % 5 != 1 and not slow and not lossy:
             return
+        window, self._fps_window = self._fps_window, []
+        spread = "по 2 с: мін %.1f, макс %.1f, усі: %s" % (
+            min(window), max(window), " ".join("%.1f" % f for f in window)) if window else "?"
         log.log(30 if slow or lossy else 20,
-                "[%s] хід: кадрів %s, в ефір %s к/с (джерело без проріджування %s), %s, викинуто %s, подвоєно %s, "
+                "[%s] хід: кадрів %s, в ефір %s к/с (%s), %s, викинуто %s, подвоєно %s, "
                 "швидкість %s, CPU %s, мережа: затримка %s мс, повторів %s%%, усього повторно %s байт",
                 self.label, s.get("frame", "?"), "%.1f" % out_fps if out_fps is not None else "?",
-                "%.1f" % self.src_fps if self.src_fps is not None else "?", s.get("bitrate", "?"),
+                spread, s.get("bitrate", "?"),
                 s.get("drop_frames", "?"), s.get("dup_frames", "?"), s.get("speed", "?"), cpu,
                 "%.0f" % self.net["rtt"] if "rtt" in self.net else "?",
                 "%.2f" % self.net["loss"] if "loss" in self.net else "?",

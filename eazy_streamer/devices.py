@@ -37,6 +37,7 @@ class Device:
     formats: dict[str, list[tuple[int, int]]] = field(default_factory=dict)
     # (формат, ширина, висота) -> частоти кадрів, які карта вміє; порожньо — не сказала
     rates: dict[tuple[str, int, int], list[float]] = field(default_factory=dict)
+    bus: str = ""       # як підключено: швидкість USB, шина, порт — для журналу
 
 
 def list_devices() -> list[Device]:
@@ -141,11 +142,31 @@ def _probe(node: str) -> Device | None:
         rates = {(fourcc, w, h): _rates(fd, fourcc, w, h)
                  for fourcc, sizes in formats.items() for w, h in sizes}
         name = "%s (%s)" % (card or "Відеопристрій", os.path.basename(node))
-        return Device(key=node, path=node, name=name, formats=formats, rates=rates)
+        return Device(key=node, path=node, name=name, formats=formats, rates=rates, bus=_bus(node))
     except OSError:
         return None
     finally:
         os.close(fd)
+
+
+def _bus(node: str) -> str:
+    """Через що карта підключена. Нестиснений 1080p у повільний USB не влазить — тому це важливо."""
+    usb = os.path.dirname(os.path.realpath("/sys/class/video4linux/%s/device" % os.path.basename(node)))
+
+    def read(name: str) -> str:
+        try:
+            with open(os.path.join(usb, name)) as f:
+                return f.read().strip()
+        except OSError:
+            return ""
+
+    speed = read("speed")
+    if not speed:
+        return "не USB"
+    kind = {"480": "USB 2", "5000": "USB 3", "10000": "USB 3.1", "20000": "USB 3.2", "12": "USB 1"}.get(speed, "USB")
+    return "%s (%s Мбіт/с), шина %s порт %s, чіп %s:%s, пристроїв на шині: %d" % (
+        kind, speed, read("busnum"), read("devpath"), read("idVendor"), read("idProduct"),
+        len([d for d in glob.glob("/sys/bus/usb/devices/%s-*" % read("busnum")) if ":" not in d]))
 
 
 def _formats(fd: int) -> dict[str, list[tuple[int, int]]]:

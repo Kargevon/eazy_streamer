@@ -10,12 +10,12 @@ import time
 from PySide6.QtCore import QRect, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QComboBox, QFrame, QGridLayout, QHBoxLayout,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QScrollArea,
     QSizePolicy, QVBoxLayout, QWidget,
 )
 
-from . import config, devices, engine, ffmpeg_cmd, hwenc, netwatch, updater
+from . import awake, config, devices, engine, ffmpeg_cmd, hwenc, netwatch, updater
 from . import log as logs
 from .log import log
 
@@ -50,6 +50,9 @@ QPushButton#go[live="false"]:hover { background: #37b86b; }
 QPushButton#go[live="true"] { background: #c94343; }
 QPushButton#go[live="true"]:hover { background: #df5050; }
 QLabel#hint { color: #8b93a3; font-size: 12px; }
+QCheckBox { color: #b6bcc8; spacing: 7px; }
+QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #4a5263; border-radius: 4px; background: #12141a; }
+QCheckBox::indicator:checked { background: #3b6fd4; border-color: #5b8dee; }
 QLabel#title { font-size: 18px; font-weight: 600; }
 QScrollArea { border: none; }
 """
@@ -422,6 +425,12 @@ class Window(QMainWindow):
         top.addWidget(self.update_btn)
         top.addWidget(self.update_note)
         top.addStretch(1)
+        self.awake = awake.KeepAwake(self)
+        self.awake_box = QCheckBox("Тримати екран увімкненим")
+        self.awake_box.setToolTip("Поки це вікно відкрите, екран не гасне і комп'ютер не засинає від бездіяльності")
+        self.awake_box.setChecked(bool(config.load_settings().get("keep_awake", True)))
+        self.awake_box.toggled.connect(self._on_awake_toggled)
+        top.addWidget(self.awake_box)
         top.addWidget(self.encoder_note)
         top.addWidget(add_btn)
 
@@ -448,6 +457,7 @@ class Window(QMainWindow):
 
         for item in config.load() or [{}]:
             self.add_card(item, save=False)
+        self.awake.set(self.awake_box.isChecked())
 
         self.updater = updater.Updater(self)
         self.updater.checking.connect(self._on_update_checking)
@@ -534,6 +544,10 @@ class Window(QMainWindow):
 
     # --- джерела і налаштування ----------------------------------------
 
+    def _on_awake_toggled(self, on: bool):
+        self.awake.set(on)
+        self.save_soon()
+
     def _log_load(self):
         live = [c.title() for c in self.cards if c.live]
         load = logs.load_line()         # рахуємо завжди: наступний замір порівнюється з цим
@@ -596,6 +610,7 @@ class Window(QMainWindow):
 
     def _shutdown(self):
         log.info("Закриття програми")
+        self.awake.set(False)
         self._refresh_timer.stop()
         self._save_timer.stop()
         self.save_now()
@@ -616,9 +631,11 @@ class Window(QMainWindow):
         self._devices = found
         log.info("Джерел знайдено: %d", len(found))
         for dev in found:
-            log.info("  %s -> %s | %s", dev.name, dev.path, "; ".join(
-                "%s: %s" % (fmt, " ".join("%dx%d" % s for s in sizes) or "будь-який розмір")
-                for fmt, sizes in dev.formats.items()))
+            log.info("  %s -> %s | %s", dev.name, dev.path, dev.bus)
+            for fmt, sizes in dev.formats.items():
+                log.info("      %s: %s", fmt, "; ".join(
+                    "%dx%d @ %s" % (s + ("/".join("%g" % r for r in dev.rates.get((fmt,) + s, [])) or "?",))
+                    for s in sizes) or "будь-який розмір")
         for card in self.cards:
             card.set_devices(found)
 
@@ -627,7 +644,8 @@ class Window(QMainWindow):
 
     def save_now(self):
         try:
-            config.save([card.data() for card in self.cards])
+            config.save([card.data() for card in self.cards],
+                        {"keep_awake": self.awake_box.isChecked()})
         except OSError as e:
             self.statusBar().showMessage("Не вдалося зберегти налаштування: %s" % e, 8000)
 
