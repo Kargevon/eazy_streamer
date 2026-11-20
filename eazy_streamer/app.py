@@ -60,6 +60,18 @@ QScrollArea { border: none; }
 STATUS_COLORS = {"ok": "#4cd27e", "wait": "#e8b84a", "bad": "#ff7b6b", "calm": "#8b93a3"}
 
 
+class SourceCombo(QComboBox):
+    """Список джерел, який не реагує на коліщатко.
+
+    Звичайний список міняє вибір, коли над ним крутять коліщатко. Людина гортає вікно,
+    курсор проїжджає над списком — і джерело стріму тихо змінюється. Тому коліщатко
+    віддаємо вікну, а вибір — лише клацанням.
+    """
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+
 class Preview(QWidget):
     """Картинка 16:9. Малює лише готовий кадр — жодної обробки тут немає."""
 
@@ -116,6 +128,10 @@ class Card(QFrame):
         self.source_name = str(data.get("source_name") or "")
         self._devices: list[devices.Device] = []
         self._note = ""             # разове повідомлення під кнопкою
+        self._note_timer = QTimer(self)
+        self._note_timer.setSingleShot(True)
+        self._note_timer.setInterval(6000)
+        self._note_timer.timeout.connect(self._clear_note)
         self.engine = engine.Engine(self)
 
         self.name_edit = QLineEdit(str(data.get("name") or ""))
@@ -128,7 +144,8 @@ class Card(QFrame):
 
         self.preview = Preview()
 
-        self.source_combo = QComboBox()
+        self.source_combo = SourceCombo()
+        self.source_combo.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.source_combo.setToolTip("Карта відеозахоплення для цього стріму")
 
         self.url_edit = QLineEdit(str(data.get("url") or ""))
@@ -255,14 +272,16 @@ class Card(QFrame):
         key = self.source_combo.itemData(index) or ""
         owner = self.window_.owner_of(key, self)
         if owner is not None:
-            self._note = "Це джерело вже зайняте секцією «%s»" % owner.title()
+            log.info("[%s] вибір джерела відхилено: «%s» зайняте секцією «%s»", self.title(),
+                     self.source_combo.itemText(index), owner.title())
+            self._say("Це джерело вже зайняте секцією «%s»" % owner.title())
             self.source_combo.setCurrentIndex(self.source_combo.findData(self.source_key))
-            self._refresh_view()
             return
-        self._note = ""
+        self._clear_note()
         self.source_key = key
         dev = self.device()
         self.source_name = dev.name if dev else ""
+        log.info("[%s] обрано джерело: %s", self.title(), self.source_name or "жодного")
         self.window_.save_soon()
         self.sync()
 
@@ -285,18 +304,30 @@ class Card(QFrame):
             self.sync()
             return
         if not self.source_key:
-            self._note = "Спершу оберіть джерело"
+            self._say("Спершу оберіть джерело")
         elif not ffmpeg_cmd.is_stream_url(self.url_edit.text()):
-            self._note = "Вставте посилання на стрім — воно починається з rtmp:// або rtmps://"
+            self._say("Вставте посилання на стрім — воно починається з rtmp:// або rtmps://")
             self.url_edit.setFocus()
         else:
-            self._note = ""
+            self._clear_note()
             self.live = True
             log.info("[%s] КНОПКА: почати стрім, якість %s, джерело «%s», куди %s", self.title(),
                      self.quality_key(), self.source_name, logs.mask(self.url_edit.text().strip()))
         if self._note:
             log.info("[%s] старт відхилено: %s", self.title(), self._note)
         self.sync()
+
+    def _say(self, text: str):
+        """Разове повідомлення під кнопкою: показати і за кілька секунд прибрати."""
+        self._note = text
+        self._note_timer.start()
+        self._refresh_view()
+
+    def _clear_note(self):
+        self._note_timer.stop()
+        if self._note:
+            self._note = ""
+            self._refresh_view()
 
     def _on_url_edited(self, _text: str):
         self._note = ""
@@ -309,7 +340,7 @@ class Card(QFrame):
     def _on_engine(self, state: str, text: str):
         if state == engine.IDLE and text and self.live:
             self.live = False       # ffmpeg не запустився взагалі
-            self._note = text
+            self._note = text       # це не разове: без ffmpeg стрім не піде, хай висить
         self._refresh_view()
 
     def stop(self):
