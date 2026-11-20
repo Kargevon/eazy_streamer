@@ -21,18 +21,35 @@ _DSHOW_FORMATS = {"MJPG": ["-vcodec", "mjpeg"], "YUYV": ["-pixel_format", "yuyv4
 
 @dataclass(frozen=True)
 class Quality:
+    """Кнопка в секції: стеля бітрейту. Розмір кадру йде в комплекті — на 1 Мбіт/с кадр 1080p
+    розсипався б на квадрати, тому до малої стелі картинку зменшуємо."""
     key: str
     label: str
-    height: int
-    kbit: int
+    height: int         # кадр в ефірі не вищий за це (більше, ніж дає джерело, не буває)
+    kbit: int           # стеля бітрейту; 0 — без стелі
 
 
+NO_LIMIT_HEIGHT = 100000
 QUALITIES = (
-    Quality("low", "480p", 480, 1000),
-    Quality("mid", "720p", 720, 2500),
-    Quality("high", "1080p", 1080, 4500),
+    Quality("low", "1", 480, 1000),
+    Quality("mid", "2,5", 720, 2500),
+    Quality("high", "5", 1080, 5000),
+    Quality("max", "Необмежено", NO_LIMIT_HEIGHT, 0),
 )
 DEFAULT_QUALITY = "mid"
+
+# Кодер тримає якість, а стеля лише обмежує зверху: спокійна картинка важить мало,
+# складна росте до стелі. Числа — рівень якості (менше = краще), звичні для H.264.
+CPU_QUALITY = 23
+HW_QUALITY = 24
+# «Необмежено» теж має запобіжник: чистий шум на якості 24 дає понад 100 Мбіт/с
+# (виміряно), і такий потік покладе і канал, і сервер
+SAFETY_KBIT = 25000
+
+# Як апаратний кодер керує бітрейтом — визначає проба при старті:
+#   quality — якість зі стелею (найкраще); vbr — стеля без якості, але на простій картинці
+#   не доливає; cbr — завжди рівно стеля (як було до 0.6)
+HW_RC = "cbr"
 
 # Який апаратний кодер пройшов пробу: vaapi (Linux), nvenc / qsv / amf (Windows).
 # None — кодуємо процесором. Виставляє hwenc.Probe.
@@ -52,13 +69,13 @@ HW_VARIANTS = ((None, False), (None, True), ("iHD", True), ("i965", False), ("ra
 WIN_ENCODERS = ("nvenc", "qsv", "amf")
 
 
-def hw_probe_args(node: str, low_power: bool = False, kind: str = "vaapi") -> list[str]:
-    """Короткий пробний запуск: чи вміє ця відеокарта кодувати H.264."""
+def hw_probe_args(node: str, low_power: bool = False, kind: str = "vaapi", rc: str = "cbr") -> list[str]:
+    """Короткий пробний запуск: чи вміє ця відеокарта кодувати H.264 (у заданому режимі бітрейту)."""
     head = ["-hide_banner", "-loglevel", "error"]
     if kind == "vaapi":
         head += ["-vaapi_device", node]
     return head + ["-f", "lavfi", "-i", "color=size=1280x720:rate=30", "-frames:v", "10",
-                   "-vf", _to_encoder(kind)] + _hw_encoder(2500, low_power, kind=kind) + ["-f", "null", "-"]
+                   "-vf", _to_encoder(kind)] + _hw_encoder(2500, low_power, kind=kind, rc=rc) + ["-f", "null", "-"]
 
 
 def _to_encoder(kind: str | None) -> str:
@@ -70,24 +87,50 @@ def _to_encoder(kind: str | None) -> str:
     return "format=yuv420p"
 
 
-def _hw_encoder(kbit: int, low_power: bool, gop: int = STREAM_FPS * 2, kind: str | None = None) -> list[str]:
+def _hw_encoder(kbit: int, low_power: bool, gop: int = STREAM_FPS * 2, kind: str | None = None,
+                rc: str | None = None) -> list[str]:
+    """kbit=0 — без стелі (діє лише запобіжник)."""
     kind = kind or HW_KIND or "vaapi"
-    rate = ["-b:v", "%dk" % kbit, "-maxrate", "%dk" % kbit, "-bufsize", "%dk" % (kbit * 2),
-            "-bf", "0", "-g", str(gop)]
+    rc = rc or HW_RC
+    cap = kbit or SAFETY_KBIT
+    ceiling = ["-maxrate", "%dk" % cap, "-bufsize", "%dk" % (cap * 2)]
+    fixed = ["-b:v", "%dk" % cap] + ceiling
+    tail = ["-bf", "0", "-g", str(gop)]
+    q = str(HW_QUALITY)
     if kind == "nvenc":
-        return ["-c:v", "h264_nvenc", "-preset", "p4", "-tune", "ll", "-rc", "cbr"] + rate
+        head = ["-c:v", "h264_nvenc", "-preset", "p4", "-tune", "ll"]
+        if rc == "quality":
+            return head + ["-rc", "vbr", "-cq", q, "-b:v", "0"] + ceiling + tail
+        return head + (["-rc", "cbr"] + fixed if kbit else ["-rc", "constqp", "-qp", q]) + tail
     if kind == "qsv":
-        return ["-c:v", "h264_qsv", "-preset", "veryfast", "-look_ahead", "0"] + rate
+        head = ["-c:v", "h264_qsv", "-preset", "veryfast", "-look_ahead", "0"]
+        if rc == "quality":
+            return head + ["-global_quality", q] + fixed + tail
+        return head + (fixed if kbit else ["-global_quality", q]) + tail
     if kind == "amf":
-        return ["-c:v", "h264_amf", "-usage", "lowlatency", "-rc", "cbr"] + rate
-    return ["-c:v", "h264_vaapi"] + rate + (["-low_power", "1"] if low_power else [])
+        head = ["-c:v", "h264_amf", "-usage", "lowlatency"]
+        if rc == "quality":
+            return head + ["-rc", "qvbr", "-qvbr_quality_level", q] + fixed + tail
+        return head + (["-rc", "cbr"] + fixed if kbit else ["-rc", "cqp", "-qp_i", q, "-qp_p", q]) + tail
+    head, low = ["-c:v", "h264_vaapi"], (["-low_power", "1"] if low_power else [])
+    if rc == "quality":
+        return head + ["-rc_mode", "QVBR", "-global_quality", q] + fixed + tail + low
+    if not kbit:
+        return head + ["-rc_mode", "CQP", "-qp", q] + tail + low
+    return head + (["-rc_mode", "VBR"] if rc == "vbr" else []) + fixed + tail + low
 
 
 def _cpu_encoder(kbit: int, gop: int = STREAM_FPS * 2) -> list[str]:
+    cap = kbit or SAFETY_KBIT
     return ["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
             "-profile:v", "main",
-            "-b:v", "%dk" % kbit, "-maxrate", "%dk" % kbit, "-bufsize", "%dk" % (kbit * 2),
+            "-crf", str(CPU_QUALITY), "-maxrate", "%dk" % cap, "-bufsize", "%dk" % (cap * 2),
             "-g", str(gop), "-keyint_min", str(gop), "-sc_threshold", "0"]
+
+
+def rate_mode(level: int) -> str:
+    """Як зараз керується бітрейт: від цього залежить, чи можна вірити напису «ріже»."""
+    return "quality" if level == 0 else HW_RC
 
 
 def quality(key: str) -> Quality:
@@ -141,18 +184,23 @@ def source_size(device: Device | None, want_height: int) -> tuple[int, int] | No
 
 
 def stream_kbit(device: Device | None, q: Quality) -> int:
-    """Бітрейт під справжню картинку: джерело 480p не варте 4,5 Мбіт/с, хоч би що натиснули."""
-    size = source_size(device, q.height)
-    if not size or size[1] >= q.height:
-        return q.kbit
-    fitting = [x.kbit for x in QUALITIES if x.height <= size[1]]
-    return min(q.kbit, max(fitting) if fitting else QUALITIES[0].kbit)
+    """Стеля бітрейту — рівно та, що на кнопці (0 = без стелі). Людина обрала — так і робимо:
+    аналоговому снігу 480p може знадобитись більше, ніж чистому 1080p."""
+    return q.kbit
 
 
-def out_height(device: Device | None, q: Quality) -> int:
-    """Висота кадру, що справді піде в ефір: картинку не розтягуємо понад джерело."""
+def out_size(device: Device | None, q: Quality) -> tuple[int, int] | None:
+    """Кадр, що справді піде в ефір. None — джерело не каже свого розміру наперед."""
     size = source_size(device, q.height)
-    return min(q.height, size[1]) if size else q.height
+    if not size:
+        return None
+    height = min(q.height, size[1])
+    return _even(size[0] * height / size[1]), height
+
+
+def thin_step(rate: float | None) -> int:
+    """Кожен який кадр беремо: 1 — усі; 2 — кожен другий, якщо карта вміє лише 60 к/с."""
+    return int(-(-rate // STREAM_FPS)) if rate and rate > STREAM_FPS * 1.2 else 1
 
 
 def _even(value: float) -> int:
@@ -224,7 +272,7 @@ def build(device: Device | None, url: str | None, q: Quality, level: int | None 
 
     # В ефір іде стільки кадрів, скільки дає джерело: 25 — то 25, 10 — то 10, без подвоєнь.
     # Лише якщо карта не вміє менше ніж 60 — беремо кожен другий, щоб не кодувати зайвого.
-    step = int(-(-rate // STREAM_FPS)) if rate and rate > STREAM_FPS * 1.2 else 1
+    step = thin_step(rate)
     thin = "framestep=%d," % step if step > 1 else ""
     gop = max(20, int(round(2 * rate / step))) if rate else STREAM_FPS * 2     # ключовий кадр раз на 2 с
     if level == 2:

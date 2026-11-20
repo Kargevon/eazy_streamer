@@ -83,12 +83,49 @@ class Probe(QObject):
             ffmpeg_cmd.HW_NODE = node
             ffmpeg_cmd.HW_DRIVER = driver
             ffmpeg_cmd.HW_LOW_POWER = low
-            if kind == "vaapi":
-                self._probe_pipe(node, driver, low)
-            else:
-                self.done.emit()
+            ffmpeg_cmd.HW_RC = "cbr"
+            self._probe_rc(node, driver, low, kind, ["quality", "vbr"] if kind == "vaapi" else ["quality"])
         else:
             self._next()
+
+    def _probe_rc(self, node: str, driver: str | None, low: bool, kind: str, modes: list[str]):
+        """Кодер є. Питання: чи вміє він тримати якість зі стелею, а не просто лити рівний бітрейт."""
+        if not modes:
+            log.info("Керування бітрейтом на GPU: по-старому, рівний потік")
+            self._after_rc(node, driver, low, kind)
+            return
+        mode = modes.pop(0)
+        proc = QProcess(self)
+        self._proc = proc
+        if driver:
+            env = QProcessEnvironment.systemEnvironment()
+            env.insert("LIBVA_DRIVER_NAME", driver)
+            proc.setProcessEnvironment(env)
+
+        def finished(code, status, p=proc):
+            if p is not self._proc:
+                return
+            self._proc = None
+            ok = code == 0 and status == QProcess.ExitStatus.NormalExit
+            err = bytes(p.readAllStandardError().data()).decode("utf-8", "replace").strip().splitlines()
+            log.info("Проба керування бітрейтом «%s»: %s", mode, "ПРАЦЮЄ" if ok else
+                     "ні — код %s — %s" % (code, " | ".join(err[:2])[:240]))
+            p.deleteLater()
+            if ok:
+                ffmpeg_cmd.HW_RC = mode
+                self._after_rc(node, driver, low, kind)
+            else:
+                self._probe_rc(node, driver, low, kind, modes)
+
+        proc.finished.connect(finished)
+        proc.start(osdep.ffmpeg_path(), ffmpeg_cmd.hw_probe_args(node, low, kind, mode))
+        QTimer.singleShot(_TIMEOUT_MS, lambda p=proc: self._on_timeout(p))
+
+    def _after_rc(self, node: str, driver: str | None, low: bool, kind: str):
+        if kind == "vaapi":
+            self._probe_pipe(node, driver, low)
+        else:
+            self.done.emit()
 
     def _probe_pipe(self, node: str, driver: str | None, low: bool):
         """Кодер є. Друге питання: чи вміє GPU ще й приймати кадр, масштабувати й віддавати перегляд."""

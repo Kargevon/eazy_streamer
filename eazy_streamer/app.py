@@ -166,17 +166,21 @@ class Card(QFrame):
             btn = QPushButton(q.label)
             btn.setCheckable(True)
             btn.setChecked(q.key == saved_quality)
-            btn.setToolTip("%s, близько %.1f Мбіт/с" % (q.label, q.kbit / 1000))
+            btn.setToolTip(
+                "Не більше %s Мбіт/с. Кадр в ефірі не більший за %dp.\nСпокійна картинка займає менше." % (
+                    q.label, q.height) if q.kbit else
+                "Без стелі: картинка займає стільки, скільки їй треба, кадр — як дає джерело.\n"
+                "Сніг і дрібні деталі можуть дати 10 Мбіт/с і більше.")
             self.quality_group.addButton(btn)
             self.quality_buttons[q.key] = btn
-            quality_row.addWidget(btn)
+            quality_row.addWidget(btn, 1 if q.kbit else 2)
 
         self.go_btn = QPushButton()
         self.go_btn.setObjectName("go")
         self.go_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.status = QLabel()
         self.status.setWordWrap(True)
-        self.status.setMinimumHeight(38)
+        self.status.setMinimumHeight(78)        # чотири рядки: щоб секція не стрибала, коли піде ефір
         self.status.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
         head = QHBoxLayout()
@@ -196,7 +200,7 @@ class Card(QFrame):
         box.addWidget(self.source_combo)
         box.addWidget(self._hint("Посилання на стрім"))
         box.addLayout(url_row)
-        box.addWidget(self._hint("Якість"))
+        box.addWidget(self._hint("Бітрейт, Мбіт/с"))
         box.addLayout(quality_row)
         box.addSpacing(4)
         box.addWidget(self.go_btn)
@@ -376,16 +380,21 @@ class Card(QFrame):
         elif state == engine.LIVE:
             text, tone = "● В ефірі  %s" % _clock(time.monotonic() - self.engine.live_since), "ok"
             q = ffmpeg_cmd.quality(self.quality_key())
-            real = ffmpeg_cmd.out_height(dev_now, q)
-            parts = ["%dp" % real if real >= q.height else "%dp — більше джерело не дає" % real]
-            if self.engine.src_fps is not None:
-                parts.append("%.0f к/с" % self.engine.src_fps)
-            stats, net = self.engine.stats, self.engine.net
-            if stats.get("bitrate", "").endswith("kbits/s"):
-                try:
-                    parts.append("%.1f Мбіт/с" % (float(stats["bitrate"][:-7]) / 1000))
-                except ValueError:
-                    pass
+            eng = self.engine
+            came = ffmpeg_cmd.source_size(dev_now, q.height)
+            goes = ffmpeg_cmd.out_size(dev_now, q)
+            fps = lambda value: " %.0f к/с" % value if value is not None else ""
+            text += "\nвхід: %s%s" % ("%d×%d" % came if came else "?", fps(eng.in_fps))
+            text += "\nвихід: %s%s" % ("%d×%d" % goes if goes else "?", fps(eng.out_fps))
+            parts = []
+            stats, net = eng.stats, eng.net
+            if eng.kbit_now is not None:
+                now = ("%.1f" % (eng.kbit_now / 1000)).replace(".", ",")
+                parts.append("%s/%s Мбіт/с" % (now, q.label) if q.kbit else "%s Мбіт/с" % now)
+                # «ріже» кажемо лише там, де кодер тримає якість: тоді бітрейт під стелею означає,
+                # що картинка хотіла б більше. У режимі рівного потоку він під стелею завжди.
+                if q.kbit and eng.rate_mode == "quality" and eng.kbit_now >= q.kbit * 0.93:
+                    parts.append("ріже")
             if "loss" in net:
                 parts.append("втрати %.1f %%" % net["loss"])
             slow = stats.get("speed", "1x").rstrip("x")

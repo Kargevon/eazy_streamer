@@ -51,6 +51,13 @@ class Engine(QObject):
         self._fps_window: list[float] = []  # к/с у кожному 2-секундному звіті від минулого запису
         self._preview_frames = 0            # кадрів перегляду від минулого запису в журнал
         self._size_prev = 0
+        self._size_last = 0
+        self._recent: list[tuple[float, int]] = []     # (секунд, байт) за останні звіти
+        self.kbit_now: float | None = None  # бітрейт зараз, а не середній від старту
+        self.in_fps: float | None = None    # скільки кадрів за секунду дає джерело
+        self.out_fps: float | None = None   # скільки йде в ефір
+        self.rate_mode = "cbr"              # як керується бітрейт у цьому ефірі
+        self._step = 1
         self.stalled = False                # ефір іде, а нових кадрів немає
         self._rate_prev = None
         self._reports = 0
@@ -132,6 +139,9 @@ class Engine(QObject):
         self.stats = {}
         self._preview_frames = 0
         self._size_prev = 0
+        self._size_last = 0
+        self._recent = []
+        self.kbit_now = self.in_fps = self.out_fps = None
         self.stalled = False
         self.net = {}
         self.src_fps = None
@@ -154,11 +164,15 @@ class Engine(QObject):
         self._proc = proc
         self._set(STARTING, "Підключення…" if url else "")
         fourcc, size, rate = ffmpeg_cmd.capture(device, quality.height if url else 480, preview=not url)
-        log.info("[%s] старт %s: джерело «%s» %s %s %s к/с, якість %s, бітрейт %s, обробка: %s", self.label,
-                 "ЕФІРУ" if url else "перегляду", device.name, fourcc or "-",
+        self._step = ffmpeg_cmd.thin_step(rate) if url else 1
+        self.rate_mode = ffmpeg_cmd.rate_mode(self._level)
+        out = ffmpeg_cmd.out_size(device, quality) if url else None
+        log.info("[%s] старт %s: вхід «%s» %s %s %s к/с; вихід %s, стеля %s, бітрейт керується: %s, обробка: %s",
+                 self.label, "ЕФІРУ" if url else "перегляду", device.name, fourcc or "-",
                  "%dx%d" % size if size else "розмір як дасть карта", "%g" % rate if rate else "?",
-                 quality.label if url else "-",
-                 "%dk" % ffmpeg_cmd.stream_kbit(device, quality) if url else "-",
+                 "%dx%d" % out if out else "-",
+                 ("%d кбіт/с" % quality.kbit if quality.kbit else "немає") if url else "-",
+                 self.rate_mode if url else "-",
                  ffmpeg_cmd.LEVEL_NAMES[self._level] if url else "-")
         log.debug("[%s] ffmpeg %s", self.label, mask(" ".join(args)))
         proc.start(osdep.ffmpeg_path(), args)
@@ -230,6 +244,16 @@ class Engine(QObject):
             out_fps = (cur[1] - prev[1]) / dt
             # в ефір іде рівно стільки кадрів, скільки дало джерело (якщо не проріджуємо 60 -> 30)
             self.src_fps = max(0.0, ((cur[1] - prev[1]) - (cur[2] - prev[2]) + (cur[3] - prev[3])) / dt)
+            self.out_fps = out_fps
+            self.in_fps = self.src_fps * self._step
+            try:
+                size_now = int(s.get("total_size", "0"))
+            except ValueError:
+                size_now = self._size_last
+            # бітрейт «зараз»: за три останні звіти (6 с), бо один звіт стрибає від ключових кадрів
+            self._recent = (self._recent + [(dt, max(0, size_now - self._size_last))])[-3:]
+            self._size_last = size_now
+            self.kbit_now = sum(b for _d, b in self._recent) * 8 / 1000 / sum(d for d, _b in self._recent)
         self._reports += 1
         if out_fps is not None:
             self._fps_window.append(out_fps)
@@ -260,14 +284,16 @@ class Engine(QObject):
         log.log(30 if slow or lossy else 20,
                 "[%s] хід: кадрів %s, в ефір %s к/с (%s), %s, викинуто %s, подвоєно %s, "
                 "швидкість %s, CPU %s, мережа: затримка %s мс, повторів %s%%, усього повторно %s байт; "
-                "від минулого запису: на сервер пішло %d КБ, у перегляд %d кадрів%s",
+                "від минулого запису: на сервер пішло %d КБ, у перегляд %d кадрів; зараз %s кбіт/с, вхід %s к/с%s",
                 self.label, s.get("frame", "?"), "%.1f" % out_fps if out_fps is not None else "?",
                 spread, s.get("bitrate", "?"),
                 s.get("drop_frames", "?"), s.get("dup_frames", "?"), s.get("speed", "?"), cpu,
                 "%.0f" % self.net["rtt"] if "rtt" in self.net else "?",
                 "%.2f" % self.net["loss"] if "loss" in self.net else "?",
                 "%d" % self.net["retrans_total"] if "retrans_total" in self.net else "?",
-                sent // 1024, preview, " — ЕФІР ЗАВМЕР" if self.stalled else "")
+                sent // 1024, preview, "%.0f" % self.kbit_now if self.kbit_now is not None else "?",
+                "%.1f" % self.in_fps if self.in_fps is not None else "?",
+                " — ЕФІР ЗАВМЕР" if self.stalled else "")
 
     def _cpu_percent(self) -> str:
         """Скільки одного ядра з'їв цей ffmpeg від минулого звіту (100% = ядро повністю)."""
