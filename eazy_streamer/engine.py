@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
@@ -18,7 +19,7 @@ _FFMPEG_LINES_PER_WINDOW = 30   # більше за 10 с у журнал не �
 IDLE, STARTING, PREVIEW, LIVE, RETRY = "idle", "starting", "preview", "live", "retry"
 
 _STALL_SECONDS = 12         # стільки без жодного кадру — вважаємо, що завис
-_STOP_GRACE_MS = 2500       # стільки чекаємо чемного виходу, далі вбиваємо
+_STOP_GRACE_MS = 6000       # стільки чекаємо чемного виходу (закриття RTMPS — кілька секунд), далі вбиваємо
 _RETRY_STEPS = (2, 4, 8, 15)
 _HEALTHY_SECONDS = 30       # пропрацював стільки — лічильник спроб з нуля
 
@@ -41,6 +42,7 @@ class Engine(QObject):
         self._fails = 0
         self._retry_left = 0
         self._reason = ""
+        self._cpu_prev = None
         self.label = "?"            # назва секції — для журналу
         self.stats: dict[str, str] = {}
         self._err_line = bytearray()
@@ -70,16 +72,20 @@ class Engine(QObject):
     def is_live_wanted(self) -> bool:
         return bool(self._want and self._want[1])
 
-    def shutdown(self):
-        """Закриття програми: зупинити і дочекатися."""
+    def request_stop(self):
+        """Закриття: попросити ffmpeg вийти, не чекаючи."""
         self._want = None
         self._tick.stop()
+        if self._proc is not None and not self._stopping:
+            self._stopping = True
+            self._proc.terminate()
+
+    def wait_stopped(self):
         proc = self._proc
         if proc is None:
             return
-        self._stopping = True
-        proc.terminate()
         if not proc.waitForFinished(_STOP_GRACE_MS):
+            log.warning("[%s] ffmpeg не вийшов сам при закритті — вбиваю", self.label)
             proc.kill()
             proc.waitForFinished(1000)
 
@@ -108,6 +114,7 @@ class Engine(QObject):
         self._err_line.clear()
         self._pending = {}
         self.stats = {}
+        self._cpu_prev = None
         self._stopping = False
         self._got_frame = False
         self._started_at = self._last_frame_at = time.monotonic()
@@ -123,8 +130,11 @@ class Engine(QObject):
         proc.errorOccurred.connect(self._on_error)
         self._proc = proc
         self._set(STARTING, "Підключення…" if url else "")
-        log.info("[%s] старт %s: джерело «%s», якість %s, кодер %s", self.label,
-                 "ЕФІРУ" if url else "перегляду", device.name, quality.label if url else "-",
+        size = ffmpeg_cmd.source_size(device, quality.height if url else 480)
+        log.info("[%s] старт %s: джерело «%s» %s, якість %s, бітрейт %s, кодер %s", self.label,
+                 "ЕФІРУ" if url else "перегляду", device.name,
+                 "%dx%d" % size if size else "розмір як дасть карта", quality.label if url else "-",
+                 "%dk" % ffmpeg_cmd.stream_kbit(device, quality) if url else "-",
                  (ffmpeg_cmd.HW_NODE or "CPU") if url else "-")
         log.debug("[%s] ffmpeg %s", self.label, mask(" ".join(args)))
         proc.start("ffmpeg", args)
@@ -181,16 +191,31 @@ class Engine(QObject):
             if line:
                 self._on_ffmpeg_line(line)
 
+    def _cpu_percent(self) -> str:
+        """Скільки одного ядра з'їв цей ffmpeg від минулого звіту (100% = ядро повністю)."""
+        try:
+            with open("/proc/%d/stat" % self._proc.processId()) as f:
+                fields = f.read().rsplit(")", 1)[1].split()
+            ticks = int(fields[11]) + int(fields[12])       # utime + stime
+        except (OSError, ValueError, IndexError, AttributeError):
+            return "?"
+        now, prev = time.monotonic(), self._cpu_prev
+        self._cpu_prev = (now, ticks)
+        if not prev or now <= prev[0]:
+            return "?"
+        return "%.0f%%" % ((ticks - prev[1]) / os.sysconf("SC_CLK_TCK") / (now - prev[0]) * 100)
+
     def _on_ffmpeg_line(self, line: str):
         key, sep, value = line.partition("=")
         if sep and key.startswith(_PROGRESS_KEYS) and " " not in key:
             self._pending[key] = value.strip()
             if key == "progress":
                 self.stats, self._pending = self._pending, {}
-                log.info("[%s] хід: кадрів %s, %s к/с, %s, пропущено %s, подвоєно %s, швидкість %s",
+                log.info("[%s] хід: кадрів %s, %s к/с, %s, пропущено %s, подвоєно %s, швидкість %s, CPU %s",
                          self.label, self.stats.get("frame", "?"), self.stats.get("fps", "?"),
                          self.stats.get("bitrate", "?"), self.stats.get("drop_frames", "?"),
-                         self.stats.get("dup_frames", "?"), self.stats.get("speed", "?"))
+                         self.stats.get("dup_frames", "?"), self.stats.get("speed", "?"),
+                         self._cpu_percent())
             return
         self._err += line.encode("utf-8") + b"\n"
         del self._err[:-4000]

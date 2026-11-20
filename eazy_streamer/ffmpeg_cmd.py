@@ -73,6 +73,22 @@ def is_stream_url(url: str) -> bool:
     return url.startswith(("rtmp://", "rtmps://")) and len(url) > len("rtmps://") + 2
 
 
+def source_size(device: Device | None, want_height: int) -> tuple[int, int] | None:
+    """Кадр, який реально прийде з джерела. None — карта дасть будь-який, який попросимо."""
+    if device is None or device.key == TEST_KEY:
+        return (1280, 720)
+    return pick_capture(device, want_height)[1]
+
+
+def stream_kbit(device: Device | None, q: Quality) -> int:
+    """Бітрейт під справжню картинку: джерело 480p не варте 4,5 Мбіт/с, хоч би що натиснули."""
+    size = source_size(device, q.height)
+    if not size or size[1] >= q.height:
+        return q.kbit
+    fitting = [x.kbit for x in QUALITIES if x.height <= size[1]]
+    return min(q.kbit, max(fitting) if fitting else QUALITIES[0].kbit)
+
+
 def build(device: Device | None, url: str | None, q: Quality) -> list[str]:
     """Аргументи ffmpeg (без самого слова ffmpeg).
 
@@ -102,7 +118,8 @@ def build(device: Device | None, url: str | None, q: Quality) -> list[str]:
         STREAM_FPS, q.height, "format=nv12,hwupload" if hw else "format=yuv420p")
     graph = "[0:v]split=2[a][p];[a]%s[air];[p]%s[pv]" % (air, preview)
     args += ["-filter_complex", graph, "-map", "[air]", "-map", "1:a"]
-    args += _hw_encoder(q.kbit, HW_LOW_POWER) if hw else _cpu_encoder(q.kbit)
+    kbit = stream_kbit(device, q)
+    args += _hw_encoder(kbit, HW_LOW_POWER) if hw else _cpu_encoder(kbit)
     args += [
         "-c:a", "aac", "-b:a", "32k",
         "-shortest", "-flvflags", "no_duration_filesize",

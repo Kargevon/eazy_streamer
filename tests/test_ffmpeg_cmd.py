@@ -15,7 +15,7 @@ class BuildTest(unittest.TestCase):
     def test_live_sends_flv_and_keeps_preview(self):
         args = F.build(None, URL, F.quality("high"))
         self.assertEqual(args[args.index("flv") + 1], URL)
-        self.assertEqual(args[args.index("-b:v") + 1], "4500k")
+        self.assertEqual(args[args.index("-b:v") + 1], "2500k")
         self.assertEqual(args[-1], "pipe:1")
 
     def test_url_check(self):
@@ -44,6 +44,13 @@ class CaptureSizeTest(unittest.TestCase):
     def test_card_smaller_than_wanted_gives_its_best(self):
         dev = Device("k", "/dev/video0", "card", {"YUYV": [(720, 576), (640, 480)]})
         self.assertEqual(pick_capture(dev, 1080), ("YUYV", (720, 576)))
+
+    def test_bitrate_follows_real_source_size(self):
+        small = Device("k", "/dev/video0", "cam", {"MJPG": [(640, 480)]})
+        self.assertEqual(F.stream_kbit(small, F.quality("high")), 1000)
+        self.assertEqual(F.stream_kbit(self.DEV, F.quality("high")), 4500)
+        self.assertEqual(F.stream_kbit(None, F.quality("high")), 2500)     # тестова картинка 720p
+        self.assertEqual(F.stream_kbit(None, F.quality("low")), 1000)
 
     def test_free_size_card(self):
         self.assertEqual(pick_capture(Device("k", "p", "n", {"YUYV": []}), 720), ("YUYV", None))

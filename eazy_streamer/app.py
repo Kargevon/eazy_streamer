@@ -7,8 +7,8 @@ import shutil
 import sys
 import time
 
-from PySide6.QtCore import QRect, QSize, Qt, QTimer, QUrl
-from PySide6.QtGui import QColor, QDesktopServices, QImage, QPainter
+from PySide6.QtCore import QRect, QSize, Qt, QTimer
+from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QComboBox, QFrame, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QScrollArea,
@@ -229,6 +229,9 @@ class Card(QFrame):
 
     def set_devices(self, found: list[devices.Device]):
         self._devices = found
+        dev = self.device()
+        if dev is not None:
+            self.source_name = dev.name     # номер videoN міг змінитись після перезавантаження
         combo = self.source_combo
         combo.blockSignals(True)
         combo.clear()
@@ -308,7 +311,8 @@ class Card(QFrame):
 
     def stop(self):
         self.live = False
-        self.engine.shutdown()
+        self.engine.request_stop()
+        self.engine.wait_stopped()
 
     # --- вигляд --------------------------------------------------------
 
@@ -406,10 +410,6 @@ class Window(QMainWindow):
         top.addWidget(self.update_note)
         top.addStretch(1)
         top.addWidget(self.encoder_note)
-        logs_btn = QPushButton("Журнал")
-        logs_btn.setToolTip("Відкрити папку з журналом роботи:\n%s" % logs.log_dir())
-        logs_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(logs.log_dir())))
-        top.addWidget(logs_btn)
         top.addWidget(add_btn)
 
         self.grid_host = QWidget()
@@ -521,8 +521,9 @@ class Window(QMainWindow):
 
     def _log_load(self):
         live = [c.title() for c in self.cards if c.live]
+        load = logs.load_line()         # рахуємо завжди: наступний замір порівнюється з цим
         if live:
-            log.info("Машина: %s | в ефірі %d: %s", logs.load_line(), len(live), ", ".join(live))
+            log.info("Машина: %s | в ефірі %d: %s", load, len(live), ", ".join(live))
 
     def _show_encoder(self):
         self.encoder_note.setText("Кодує " + hwenc.encoder_name())
@@ -583,8 +584,12 @@ class Window(QMainWindow):
         self._refresh_timer.stop()
         self._save_timer.stop()
         self.save_now()
+        # Спершу просимо всіх зупинитись, потім чекаємо — так стріми закриваються разом, а не по черзі
         for card in self.cards:
-            card.stop()
+            card.live = False
+            card.engine.request_stop()
+        for card in self.cards:
+            card.engine.wait_stopped()
 
     def refresh_devices(self):
         self._show_encoder()

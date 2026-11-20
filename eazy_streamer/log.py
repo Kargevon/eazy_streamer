@@ -66,6 +66,23 @@ def system_summary() -> None:
         log.error("  ffmpeg не запускається: %s", e)
 
 
+_cpu_prev: tuple[int, int] | None = None
+
+
+def _cpu_busy() -> str:
+    """Завантаження всіх ядер разом від минулого виклику, у відсотках."""
+    global _cpu_prev
+    first = (_lines("/proc/stat") or [""])[0].split()
+    if len(first) < 6 or first[0] != "cpu":
+        return "?"
+    nums = [int(x) for x in first[1:9]]
+    total, idle = sum(nums), nums[3] + nums[4]      # idle + iowait
+    prev, _cpu_prev = _cpu_prev, (total, idle)
+    if not prev or total == prev[0]:
+        return "?"
+    return "%.0f%%" % (100 * (1 - (idle - prev[1]) / (total - prev[0])))
+
+
 def load_line() -> str:
     """Навантаження машини одним рядком — пишемо періодично, поки йдуть стріми."""
     load = (_lines("/proc/loadavg") or ["?"])[0].split()[:3]
@@ -76,7 +93,8 @@ def load_line() -> str:
         value = (_lines("/sys/class/thermal/thermal_zone%d/temp" % i) or [""])[0].strip()
         if kind in ("x86_pkg_temp", "cpu-thermal", "acpitz") and value.lstrip("-").isdigit():
             temps.append("%s=%d°C" % (kind, int(value) // 1000))
-    return "load %s | вільної пам'яті %d МБ | %s" % (" ".join(load), int(free) // 1024, " ".join(temps) or "t°=?")
+    return "CPU зайнятий на %s | load %s | вільної пам'яті %d МБ | %s" % (
+        _cpu_busy(), " ".join(load), int(free) // 1024, " ".join(temps) or "t°=?")
 
 
 def _lines(path: str) -> list[str]:
