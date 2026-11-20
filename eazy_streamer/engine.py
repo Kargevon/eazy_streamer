@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import QObject, QProcess, QTimer, Signal
+from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
 from PySide6.QtGui import QImage
 
 from . import ffmpeg_cmd
@@ -99,6 +99,10 @@ class Engine(QObject):
         self._started_at = self._last_frame_at = time.monotonic()
 
         proc = QProcess(self)
+        if url and ffmpeg_cmd.HW_NODE and ffmpeg_cmd.HW_DRIVER:
+            env = QProcessEnvironment.systemEnvironment()
+            env.insert("LIBVA_DRIVER_NAME", ffmpeg_cmd.HW_DRIVER)
+            proc.setProcessEnvironment(env)
         proc.readyReadStandardOutput.connect(self._on_stdout)
         proc.readyReadStandardError.connect(self._on_stderr)
         proc.finished.connect(self._on_finished)

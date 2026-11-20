@@ -1,0 +1,23 @@
+#!/bin/sh
+# Діагностика апаратного кодування. Запуск: ./diag
+# Нічого не міняє в системі, лише питає. Відповідь коротка — її легко переказати.
+cd "$(dirname "$(readlink -f "$0")")" || exit 1
+echo "версія: $(cat VERSION)  система: $(. /etc/os-release; echo "$PRETTY_NAME")  ядро: $(uname -r)"
+echo "групи: $(id -nG)"
+for card in /sys/class/drm/renderD*; do
+    echo "$(basename "$card"): виробник $(cat "$card/device/vendor")  драйвер ядра $(basename "$(readlink "$card/device/driver")")"
+done
+echo "драйвери VAAPI: $(ls /usr/lib/*/dri/*_drv_video.so 2>/dev/null | xargs -n1 basename 2>/dev/null | sed 's/_drv_video.so//' | sort -u | tr '\n' ' ')"
+for node in /dev/dri/renderD*; do
+    for driver in auto i965 iHD radeonsi; do
+        [ "$driver" = auto ] && unset LIBVA_DRIVER_NAME || export LIBVA_DRIVER_NAME="$driver"
+        err=$(ffmpeg -hide_banner -loglevel error -vaapi_device "$node" -f lavfi \
+            -i color=size=1280x720:rate=30 -frames:v 10 -vf format=nv12,hwupload \
+            -c:v h264_vaapi -b:v 2500k -maxrate 2500k -bufsize 5000k -bf 0 -g 60 -f null - 2>&1)
+        if [ $? -eq 0 ]; then
+            echo "$(basename "$node") $driver: КОДУЄ"
+        else
+            echo "$(basename "$node") $driver: ні — $(echo "$err" | grep -v '^$' | tail -1 | sed 's/^\[[^]]*\] *//' | cut -c1-80)"
+        fi
+    done
+done

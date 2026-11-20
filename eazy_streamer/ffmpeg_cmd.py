@@ -33,6 +33,9 @@ DEFAULT_QUALITY = "mid"
 # Вузол відеокарти (/dev/dri/renderD…), який пройшов пробу кодування.
 # None — кодуємо процесором. Виставляє hwenc.Probe, скидає engine при збої.
 HW_NODE: str | None = None
+# Якщо карта кодує лише з конкретним драйвером VAAPI (напр. старий i965 для Intel) — його ім'я
+HW_DRIVER: str | None = None
+HW_DRIVERS = (None, "i965", "iHD", "radeonsi")     # None = хай система обере сама
 
 
 def hw_probe_args(node: str) -> list[str]:
