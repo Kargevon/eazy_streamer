@@ -22,7 +22,7 @@ REFRESH_MS = 3000
 STYLE = """
 QWidget { background: #16181d; color: #e6e8ec; font-size: 14px; }
 QFrame#card { background: #1f232b; border: 1px solid #2e3440; border-radius: 10px; }
-QFrame#card QWidget { background: transparent; }
+QFrame#card QLabel { background: transparent; }
 QLineEdit, QComboBox { background: #12141a; border: 1px solid #3a4150; border-radius: 6px;
     padding: 7px 9px; selection-background-color: #3b6fd4; }
 QLineEdit:focus, QComboBox:focus { border-color: #5b8dee; }
