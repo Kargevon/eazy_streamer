@@ -230,12 +230,17 @@ class Engine(QObject):
         slow = speed.replace(".", "", 1).isdigit() and float(speed) < 0.95
         lossy = self.net.get("loss", 0) > 1
         cpu = self._cpu_percent()
-        # Щоразу писати — це 25 МБ на добу. Пишемо кожен п'ятий звіт і кожен поганий
-        if self._reports % 5 != 1 and not slow and not lossy:
+        # Щоразу писати — це 25 МБ на добу. Першу хвилину ефіру пишемо раз на 10 с,
+        # далі раз на хвилину; поганий звіт (ПК чи мережа не встигає) — завжди
+        every = 5 if self._reports <= 30 else 30
+        if self._reports % every != 1 and not slow and not lossy:
             return
         window, self._fps_window = self._fps_window, []
-        spread = "по 2 с: мін %.1f, макс %.1f, усі: %s" % (
-            min(window), max(window), " ".join("%.1f" % f for f in window)) if window else "?"
+        spread = "?"
+        if window:
+            spread = "по 2 с: мін %.1f, макс %.1f" % (min(window), max(window))
+            if len(window) <= 5 or max(window) - min(window) > 1.5:
+                spread += ", усі: " + " ".join("%.1f" % f for f in window)
         log.log(30 if slow or lossy else 20,
                 "[%s] хід: кадрів %s, в ефір %s к/с (%s), %s, викинуто %s, подвоєно %s, "
                 "швидкість %s, CPU %s, мережа: затримка %s мс, повторів %s%%, усього повторно %s байт",

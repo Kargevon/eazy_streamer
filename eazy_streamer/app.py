@@ -478,7 +478,7 @@ class Window(QMainWindow):
         self.netwatch = netwatch.NetWatch(lambda: [c.engine for c in self.cards], self)
 
         self._load_timer = QTimer(self)
-        self._load_timer.setInterval(15000)
+        self._load_timer.setInterval(60000)
         self._load_timer.timeout.connect(self._log_load)
         self._load_timer.start()
 

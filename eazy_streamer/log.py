@@ -12,6 +12,9 @@ import sys
 
 log = logging.getLogger("eazy")
 
+MAX_FILE_BYTES = 4_000_000
+FILES = 5
+
 
 def log_dir() -> str:
     if sys.platform.startswith("win"):
@@ -28,9 +31,10 @@ def log_path() -> str:
 def setup() -> None:
     try:
         os.makedirs(log_dir(), mode=0o700, exist_ok=True)
-        # 5 файлів по 2 МБ: диск не заб'ється, навіть якщо ffmpeg сипле попередженнями
+        # 5 файлів по 4 МБ по колу: більше 20 МБ журнал не займе ніколи, хоч би що сипав ffmpeg.
+        # На п'яти стрімах цього вистачає приблизно на тиждень історії
         handler = logging.handlers.RotatingFileHandler(
-            log_path(), maxBytes=2_000_000, backupCount=4, encoding="utf-8")
+            log_path(), maxBytes=MAX_FILE_BYTES, backupCount=FILES - 1, encoding="utf-8")
         os.chmod(log_path(), 0o600)
     except OSError:
         handler = logging.StreamHandler()       # нема куди писати — хоч у термінал
