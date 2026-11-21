@@ -496,7 +496,7 @@ class Card(QFrame):
             if "loss" in net:
                 parts.append("втрати %.1f %%" % net["loss"])
             lagging = eng.pace is not None and eng.pace < 0.9 and time.monotonic() - eng.live_since > 10
-            passes = ("%.1f" % ((net.get("through_kbit") or eng.kbit_now or 0) / 1000)).replace(".", ",")
+            passes = ("%.1f" % ((eng.kbit_now or 0) / 1000)).replace(".", ",")
             if eng.stalled:
                 parts.append("кадри не йдуть")
                 tone = "wait"
