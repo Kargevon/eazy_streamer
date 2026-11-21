@@ -14,6 +14,11 @@ from dataclasses import dataclass, field
 
 TEST_KEY = "test"
 TEST_NAME = "Тестова картинка (без карти)"
+# Важке тестове джерело: 1080p із шумом. Займає весь дозволений бітрейт — ним перевіряють,
+# скільки пропускають канал і сервер (на «Необмежено» це близько 50 Мбіт/с)
+HEAVY_KEY = "test-heavy"
+HEAVY_NAME = "Тестовий шум 1080p (важкий потік)"
+TESTS = {TEST_KEY: TEST_NAME, HEAVY_KEY: HEAVY_NAME}
 
 # Номери ioctl з <linux/videodev2.h>
 _VIDIOC_QUERYCAP = 0x80685600

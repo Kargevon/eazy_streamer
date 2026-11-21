@@ -339,8 +339,8 @@ class Card(QFrame):
         self._refresh_view()
 
     def device(self) -> devices.Device | None:
-        if self.source_key == devices.TEST_KEY:
-            return devices.Device(devices.TEST_KEY, "", devices.TEST_NAME)
+        if self.source_key in devices.TESTS:
+            return devices.Device(self.source_key, "", devices.TESTS[self.source_key])
         for dev in self._devices:
             if dev.key == self.source_key:
                 return dev
@@ -359,7 +359,8 @@ class Card(QFrame):
         combo.addItem("— оберіть джерело —", "")
         for dev in found:
             combo.addItem(dev.name, dev.key)
-        combo.addItem(devices.TEST_NAME, devices.TEST_KEY)
+        for key, name in devices.TESTS.items():
+            combo.addItem(name, key)
         index = combo.findData(self.source_key)
         if index < 0:
             # Обрана карта зараз не підключена — лишаємо її у списку, щоб не загубити вибір
@@ -671,7 +672,7 @@ class Window(QMainWindow):
 
     def owner_of(self, key: str, asking: Card) -> Card | None:
         """Одна карта — один стрім: хто вже тримає це джерело."""
-        if not key or key == devices.TEST_KEY:
+        if not key or key in devices.TESTS:
             return None
         for card in self.cards:
             if card is not asking and card.source_key == key:

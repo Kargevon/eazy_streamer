@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 
 from . import osdep
-from .devices import TEST_KEY, Device, pick_capture
+from .devices import HEAVY_KEY, TEST_KEY, TESTS, Device, pick_capture
 
 PREVIEW_W, PREVIEW_H, PREVIEW_FPS = 480, 270, 10
 PREVIEW_FRAME_BYTES = PREVIEW_W * PREVIEW_H * 3
@@ -186,7 +186,7 @@ def _key(device: Device | None) -> str:
 
 def level_for(device: Device | None) -> int:
     top = 2 if (HW_NODE and GPU_PIPE and HW_KIND == "vaapi") else 1 if HW_NODE else 0
-    if _key(device) == TEST_KEY:
+    if _key(device) in TESTS:
         top = min(top, 1)       # тестову картинку малює CPU — ганяти її через GPU лише дорожче
     return min(top, LEVEL_CAP.get(_key(device), 2))
 
@@ -219,6 +219,8 @@ def recall_caps(saved) -> None:
 
 def capture(device: Device | None, want_height: int, preview: bool = False):
     """(формат, розмір, частота), які попросимо в джерела."""
+    if device is not None and device.key == HEAVY_KEY:
+        return None, (1920, 1080), float(STREAM_FPS)
     if device is None or device.key == TEST_KEY:
         return None, (1280, 720), float(STREAM_FPS)
     return pick_capture(device, want_height, preview)
@@ -352,6 +354,8 @@ def build(device: Device | None, url: str | None, q: Quality, level: int | None 
 
 
 def _input(device: Device | None, cap) -> list[str]:
+    if device is not None and device.key == HEAVY_KEY:
+        return ["-re", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=%d,noise=alls=20:allf=t" % STREAM_FPS]
     if device is None or device.key == TEST_KEY:
         return ["-re", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=%d" % STREAM_FPS]
     if sys.platform.startswith("linux"):
