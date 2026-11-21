@@ -496,24 +496,26 @@ class Card(QFrame):
             if "loss" in net:
                 parts.append("втрати %.1f %%" % net["loss"])
             lagging = eng.pace is not None and eng.pace < 0.9 and time.monotonic() - eng.live_since > 10
-            passes = ("%.1f" % ((eng.kbit_now or 0) / 1000)).replace(".", ",")
             if eng.stalled:
                 parts.append("кадри не йдуть")
                 tone = "wait"
             elif net.get("congested"):
-                # Linux: ядро саме каже, що дані стоять у черзі на відправку
-                parts.append("%s, проходить %s Мбіт/с" % (
-                    "сервер приймає повільно" if net.get("server_slow") else "мережа не встигає", passes))
+                # Linux: ядро саме каже, що дані стоять у черзі на відправку. Скільки проходить,
+                # не пишемо — це й так перше число в рядку
+                parts.append("сервер не вивозе" if net.get("server_slow") else "інтернет не вивозе")
                 tone = "wait"
             elif lagging and eng.cpu_pct is not None and eng.cpu_pct < 80 and "queued" not in net:
-                # Windows: ядро не спитати. Але ефір відстає, а ffmpeg майже не працює — значить, чекає мережу
-                parts.append("схоже, мережа не встигає, проходить %s Мбіт/с" % passes)
+                # Windows: ядро не спитати. Ефір відстає, а ffmpeg майже не працює — значить, чекає
+                # мережу. Це здогад, тому «походу»
+                parts.append("походу інтернет не вивозе")
                 tone = "wait"
             elif lagging:
-                parts.append("ПК не встигає")
+                # Процесор ffmpeg забитий — упевнено. Ні — інтернет ядро вже виключило, лишається
+                # комп'ютер (відеокарта, сама карта захоплення), але це здогад
+                parts.append("комп'ютер не вивозе" if (eng.cpu_pct or 0) >= 80 else "походу комп'ютер не вивозе")
                 tone = "wait"
             if net.get("loss", 0) > 2:
-                parts.append("мережа губить")
+                parts.append("інтернет губить")
                 tone = "wait"
             text += "\n" + "  ·  ".join(parts)
         elif state == engine.STARTING:
