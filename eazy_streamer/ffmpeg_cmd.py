@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import sys
+import time
 from dataclasses import dataclass
 
 from . import osdep
@@ -174,6 +175,8 @@ def is_stream_url(url: str) -> bool:
 # GPU_PIPE виставляє проба; LEVEL_CAP знижує рушій для джерела, з яким GPU не впорався.
 GPU_PIPE = False
 LEVEL_CAP: dict[str, int] = {}
+LEVEL_CAP_SINCE: dict[str, float] = {}     # коли знизили: програма пам'ятає це тиждень, далі пробує знову
+LEVEL_CAP_DAYS = 7
 LEVEL_NAMES = ("усе на CPU", "GPU кодує", "GPU розтискає, масштабує і кодує")
 
 
@@ -190,7 +193,28 @@ def level_for(device: Device | None) -> int:
 
 def lower_level(device: Device | None) -> int:
     LEVEL_CAP[_key(device)] = max(0, level_for(device) - 1)
+    LEVEL_CAP_SINCE[_key(device)] = time.time()
     return LEVEL_CAP[_key(device)]
+
+
+def remembered_caps() -> dict:
+    """Що зберегти в налаштування: для якої карти обробку спрощено і відколи."""
+    return {key: [level, LEVEL_CAP_SINCE.get(key, time.time())] for key, level in LEVEL_CAP.items()}
+
+
+def recall_caps(saved) -> None:
+    """Підняти збережене при старті. Запис старший за тиждень забуваємо: раптом карту чи драйвер
+    полагодили — тоді повна обробка на GPU варта ще однієї спроби."""
+    if not isinstance(saved, dict):
+        return
+    for key, value in saved.items():
+        try:
+            level, since = int(value[0]), float(value[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if 0 <= level <= 1 and time.time() - since < LEVEL_CAP_DAYS * 86400:
+            LEVEL_CAP[str(key)] = level
+            LEVEL_CAP_SINCE[str(key)] = since
 
 
 def capture(device: Device | None, want_height: int, preview: bool = False):
@@ -249,7 +273,7 @@ def _gpu_graph(fourcc: str | None, size: tuple[int, int], out_h: int, thin: str 
     else:
         head = "[0:v]%sformat=%s,hwupload,split=2[a][p]" % (
             thin, "yuyv422" if fourcc == "YUYV" else "nv12")
-    return ("%s;[a]scale_vaapi=w=%d:h=%d:format=nv12[air];"
+    return ("%s;[a]scale_vaapi=w=%d:h=%d:format=nv12,setsar=1[air];"
             "[p]fps=%d,scale_vaapi=w=%d:h=%d:format=nv12,hwdownload,format=nv12,%s[pv]" % (
                 head, out_w, out_h, PREVIEW_FPS, pw, ph, _PAD))
 
@@ -288,6 +312,15 @@ def build(device: Device | None, url: str | None, q: Quality, level: int | None 
         args += ["-hwaccel", "vaapi", "-hwaccel_device", HW_NODE, "-hwaccel_output_format", "vaapi"]
     elif level >= 1 and HW_KIND == "vaapi":
         args += ["-vaapi_device", HW_NODE]
+    # Дешеві карти з MJPEG після зміни режиму шлють кадри старого розміру — на старті, а буває
+    # й посеред потоку (карта 1de1:f115: просили 1920x1080, а йшло впереміш із 1280x720).
+    # Кодер налаштовується по першому кадру і від чужого розміру падає або стискає картинку.
+    # Тому ланцюжок не перебудовуємо (-reinit_filter 0), а кожен кадр першим кроком приводимо
+    # до розміру, який просили. Нестисненим картам це не треба: у них розмір кадру фізично один.
+    steady = ""
+    if level < 2 and size and fourcc and fourcc not in ("YUYV", "NV12") and not fourcc.startswith("pix:"):
+        args += ["-reinit_filter", "0"]
+        steady = "scale=%d:%d:flags=bilinear," % size
     args += _input(device, cap)
     # Тиха звукова доріжка: частина серверів і плеєрів не приймає потік без звуку
     args += ["-f", "lavfi", "-i", "anullsrc=channel_layout=mono:sample_rate=44100"]
@@ -302,7 +335,9 @@ def build(device: Device | None, url: str | None, q: Quality, level: int | None 
     else:
         air = "scale=w=-2:h='min(%d,ih)':flags=bilinear,%s" % (
             q.height, _to_encoder(HW_KIND if level == 1 else None))
-        graph = "[0:v]%ssplit=2[a][p];[a]%s[air];[p]%s[pv]" % (thin, air, _CPU_PREVIEW)
+        # setsar=1: піксель квадратний, хоч би що вирахував ffmpeg із кадрів різного розміру —
+        # інакше на платформі картинка виходить стиснутою по ширині
+        graph = "[0:v]%s%ssetsar=1,split=2[a][p];[a]%s[air];[p]%s[pv]" % (thin, steady, air, _CPU_PREVIEW)
     args += ["-filter_complex", graph, "-map", "[air]", "-map", "1:a"]
     kbit = stream_kbit(device, q)
     args += _hw_encoder(kbit, HW_LOW_POWER, gop) if level >= 1 else _cpu_encoder(kbit, gop)

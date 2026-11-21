@@ -62,6 +62,14 @@ class CaptureSizeTest(unittest.TestCase):
         fast = Device("fast", "/dev/video6", "hdmi60", {"YUYV": [(1280, 720)]}, {("YUYV", 1280, 720): [60.0]})
         self.assertIn("framestep=2,", " ".join(F.build(fast, URL, F.quality("mid"))))
 
+    def test_compressed_source_is_forced_to_one_frame_size(self):
+        cam = Device("mj", "/dev/video8", "cam", {"MJPG": [(1920, 1080)]})
+        args = F.build(cam, URL, F.quality("high"), 0)
+        self.assertLess(args.index("-reinit_filter"), args.index("-i"))
+        self.assertIn("[0:v]scale=1920:1080:flags=bilinear,setsar=1,split=2", " ".join(args))
+        raw = Device("raw", "/dev/video9", "hdmi", {"YUYV": [(1920, 1080)]})
+        self.assertNotIn("-reinit_filter", F.build(raw, URL, F.quality("high"), 0))
+
     def test_levels(self):
         F.HW_KIND, F.HW_NODE, F.GPU_PIPE = "vaapi", "/dev/dri/renderD128", True
         try:

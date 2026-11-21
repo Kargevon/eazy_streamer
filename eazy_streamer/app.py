@@ -598,6 +598,11 @@ class Window(QMainWindow):
         self._save_timer.setInterval(600)
         self._save_timer.timeout.connect(self.save_now)
 
+        # Для яких карт GPU вже відмовляв: щоб не наступати на ті самі граблі при кожному запуску
+        ffmpeg_cmd.recall_caps(config.load_settings().get("level_cap"))
+        self._caps_saved = dict(ffmpeg_cmd.LEVEL_CAP)
+        for key, level in ffmpeg_cmd.LEVEL_CAP.items():
+            log.info("Пам'ятаю: для джерела %s обробка спрощена до «%s»", key, ffmpeg_cmd.LEVEL_NAMES[level])
         for item in config.load() or [{}]:
             self.add_card(item, save=False)
         self.awake.set(self.awake_box.isChecked())
@@ -716,6 +721,8 @@ class Window(QMainWindow):
     def _log_load(self):
         live = [c.title() for c in self.cards if c.live]
         load = logs.load_line()         # рахуємо завжди: наступний замір порівнюється з цим
+        if ffmpeg_cmd.LEVEL_CAP != self._caps_saved:
+            self.save_soon()            # GPU щойно відмовив на якійсь карті — запам'ятати
         if live:
             log.info("Машина: %s | в ефірі %d: %s", load, len(live), ", ".join(live))
 
@@ -814,7 +821,9 @@ class Window(QMainWindow):
     def save_now(self):
         try:
             config.save([card.data() for card in self.cards],
-                        {"keep_awake": self.awake_box.isChecked()})
+                        {"keep_awake": self.awake_box.isChecked(),
+                         "level_cap": ffmpeg_cmd.remembered_caps()})
+            self._caps_saved = dict(ffmpeg_cmd.LEVEL_CAP)
         except OSError as e:
             self.statusBar().showMessage("Не вдалося зберегти налаштування: %s" % e, 8000)
 
