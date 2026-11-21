@@ -51,6 +51,8 @@ class Engine(QObject):
         self.src_fps: float | None = None   # справжня частота кадрів джерела
         self._fps_window: list[float] = []  # к/с у кожному 2-секундному звіті від минулого запису
         self._preview_frames = 0            # кадрів перегляду від минулого запису в журнал
+        self._logged_at = 0                 # на якому звіті востаннє писали в журнал
+        self._logged_kbit: float | None = None
         self._size_prev = 0
         self._size_last = 0
         self._recent: list[tuple[float, int]] = []     # (секунд, байт) за останні звіти
@@ -140,6 +142,7 @@ class Engine(QObject):
         self._err_line.clear()
         self._pending = {}
         self.stats = {}
+        self._logged_at, self._logged_kbit = 0, None
         self._preview_frames = 0
         self._size_prev = 0
         self._size_last = 0
@@ -277,8 +280,16 @@ class Engine(QObject):
         # Щоразу писати — це 25 МБ на добу. Першу хвилину ефіру пишемо раз на 10 с,
         # далі раз на хвилину; поганий звіт (ПК чи мережа не встигає) — завжди
         every = 5 if self._reports <= 30 else 30
-        if self._reports % every != 1 and not slow and not lossy:
+        # ...і коли картинка різко змінилась: бітрейт стрибнув чи впав удвічі проти останнього запису.
+        # Саме ці миті цікаві (з'явився сигнал, пішов сніг), а раз на хвилину їх не впіймати.
+        # Не частіше ніж раз на 10 с, щоб довгий сніг не засипав журнал.
+        jump = False
+        if self.kbit_now is not None and self._reports - self._logged_at >= 5:
+            was = self._logged_kbit
+            jump = was is not None and (self.kbit_now > was * 2 + 300 or self.kbit_now * 2 + 300 < was)
+        if self._reports % every != 1 and not slow and not lossy and not jump:
             return
+        self._logged_at, self._logged_kbit = self._reports, self.kbit_now
         window, self._fps_window = self._fps_window, []
         try:
             size = int(s.get("total_size", "0"))
