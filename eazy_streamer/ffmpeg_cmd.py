@@ -344,9 +344,13 @@ def build(device: Device | None, url: str | None, q: Quality, level: int | None 
     kbit = stream_kbit(device, q)
     args += _hw_encoder(kbit, HW_LOW_POWER, gop) if level >= 1 else _cpu_encoder(kbit, gop)
     args += ["-fps_mode", "vfr"]
+    args += ["-c:a", "aac", "-b:a", "32k", "-shortest", "-flvflags", "no_duration_filesize"]
+    if osdep.IS_WIN:
+        # Windows дає сокету 64 КБ буфера відправки, і швидкість упирається в «буфер ÷ затримка»:
+        # при 36 мс до сервера це 14,5 Мбіт/с — рівно стільки й проходило на «Необмежено».
+        # Linux розтягує буфер сам (до 2,6 МБ), і явне число йому лише заважає.
+        args += ["-send_buffer_size", str(4 * 1024 * 1024)]
     args += [
-        "-c:a", "aac", "-b:a", "32k",
-        "-shortest", "-flvflags", "no_duration_filesize",
         "-f", "flv", url.strip(),
         "-map", "[pv]",
     ]

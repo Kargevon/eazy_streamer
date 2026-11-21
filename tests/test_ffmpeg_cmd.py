@@ -171,16 +171,24 @@ class WindowsDevicesTest(unittest.TestCase):
 
 
 class NetParseTest(unittest.TestCase):
-    def test_reads_sent_retrans_and_rtt_per_pid(self):
+    FREE = ('ESTAB 0 0 10.0.0.2:42730 1.2.3.4:8443 users:(("ffmpeg",pid=501,fd=5))\n'
+            '\t cubic rto:204 rtt:38.5/4.1 mss:1400 bytes_sent:1000000 bytes_retrans:2500 bytes_acked:990000 '
+            'send 146905984bps pacing_rate 9bps delivery_rate 23040000bps app_limited busy:7228ms notsent:20264\n')
+    JAMMED = ('ESTAB 0 0 10.0.0.2:42731 1.2.3.5:8443 users:(("ffmpeg",pid=502,fd=5))\n'
+              '\t cubic rto:204 rtt:40.4/3.1 bytes_sent:2346119 bytes_acked:2142152 send 93300366bps '
+              'delivery_rate 17970896bps busy:8864ms rwnd_limited:8852ms(99.9%) notsent:1739951\n'
+              'ESTAB 0 0 10.0.0.2:22 9.9.9.9:5555\n\t cubic rtt:1/1 bytes_sent:5\n')
+
+    def test_reads_what_the_kernel_knows_about_each_connection(self):
         from eazy_streamer.netwatch import parse
-        text = (
-            'ESTAB 0 0 10.0.0.2:42730 1.2.3.4:8443 users:(("ffmpeg",pid=501,fd=5))\n'
-            '\t cubic rto:204 rtt:38.5/4.1 mss:1400 bytes_sent:1000000 bytes_retrans:2500 bytes_acked:99\n'
-            'ESTAB 0 0 10.0.0.2:42731 1.2.3.5:8443 users:(("ffmpeg",pid=502,fd=5))\n'
-            '\t cubic rto:204 rtt:0.6/0.9 bytes_sent:777 bytes_acked:778\n'
-            'ESTAB 0 0 10.0.0.2:22 9.9.9.9:5555\n'
-            '\t cubic rtt:1/1 bytes_sent:5\n')
-        self.assertEqual(parse(text), {501: (1000000, 2500, 38.5), 502: (777, 0, 0.6)})
+        got = parse(self.FREE + self.JAMMED)
+        self.assertEqual(sorted(got), [501, 502])
+        self.assertEqual((got[501]["sent"], got[501]["retrans"], got[501]["rtt"]), (1000000, 2500, 38.5))
+        self.assertTrue(got[501]["app_limited"])
+        self.assertEqual(got[501]["delivery"], 23040000.0)
+        self.assertFalse(got[502]["app_limited"])
+        self.assertEqual((got[502]["notsent"], got[502]["acked"], got[502]["retrans"]), (1739951, 2142152, 0))
+        self.assertEqual((got[502]["rwnd_ms"], got[501]["rwnd_ms"]), (8852.0, 0.0))
 
 
 if __name__ == "__main__":

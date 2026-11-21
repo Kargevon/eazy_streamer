@@ -60,6 +60,10 @@ class Engine(QObject):
         self.in_fps: float | None = None    # скільки кадрів за секунду дає джерело
         self.out_fps: float | None = None   # скільки йде в ефір
         self.rate_mode = "cbr"              # як керується бітрейт у цьому ефірі
+        self.pace: float | None = None      # темп: 1.0 — ефір іде в ногу з часом, 0.5 — удвічі повільніше
+        self.cpu_pct: float | None = None   # скільки одного ядра їсть ffmpeg
+        self._pace_prev = None
+        self._paces: list[float] = []
         self.note = ""                      # що відбувається, поки картинки ще немає
         self._empty_frames = False
         self._step = 1
@@ -148,6 +152,8 @@ class Engine(QObject):
         self._size_last = 0
         self._recent = []
         self.kbit_now = self.in_fps = self.out_fps = None
+        self.pace = self.cpu_pct = self._pace_prev = None
+        self._paces = []
         self.note = ""
         self._empty_frames = False
         self.stalled = False
@@ -259,6 +265,16 @@ class Engine(QObject):
             self.src_fps = max(0.0, ((cur[1] - prev[1]) - (cur[2] - prev[2]) + (cur[3] - prev[3])) / dt)
             self.out_fps = out_fps
             self.in_fps = self.src_fps * self._step
+            # Темп — на скільки секунд відео просунувся ефір за секунду справжнього часу. «Швидкість»
+            # самого ffmpeg рахується від старту й ховає те, що відбувається зараз; ця — за 6 с.
+            try:
+                media = int(s["out_time_us"]) / 1e6
+            except (KeyError, ValueError):
+                media = None
+            if media is not None and self._pace_prev is not None and media >= self._pace_prev:
+                self._paces = (self._paces + [(media - self._pace_prev) / dt])[-3:]
+                self.pace = sum(self._paces) / len(self._paces)
+            self._pace_prev = media
             try:
                 size_now = int(s.get("total_size", "0"))
             except ValueError:
@@ -274,9 +290,10 @@ class Engine(QObject):
         # «Швидкість» у ffmpeg рахується від самого старту, тому першу хвилину вона нижча за 1
         # просто через час на підключення. Справжня біда — коли кадри перестали йти зовсім.
         self.stalled = out_fps is not None and out_fps < 1
-        slow = self.stalled or (self._reports > 30 and speed.replace(".", "", 1).isdigit() and float(speed) < 0.9)
+        slow = self.stalled or (len(self._paces) == 3 and self.pace < 0.9)
         lossy = self.net.get("loss", 0) > 1
         cpu = self._cpu_percent()
+        self.cpu_pct = float(cpu[:-1]) if cpu.endswith("%") else None
         # Щоразу писати — це 25 МБ на добу. Першу хвилину ефіру пишемо раз на 10 с,
         # далі раз на хвилину; поганий звіт (ПК чи мережа не встигає) — завжди
         every = 5 if self._reports <= 30 else 30
@@ -305,7 +322,8 @@ class Engine(QObject):
         log.log(30 if slow or lossy else 20,
                 "[%s] хід: кадрів %s, в ефір %s к/с (%s), %s, викинуто %s, подвоєно %s, "
                 "швидкість %s, CPU %s, мережа: затримка %s мс, повторів %s%%, усього повторно %s байт; "
-                "від минулого запису: на сервер пішло %d КБ, у перегляд %d кадрів; зараз %s кбіт/с, вхід %s к/с%s",
+                "від минулого запису: на сервер пішло %d КБ, у перегляд %d кадрів; зараз %s кбіт/с, вхід %s к/с, "
+                "темп %s; мережа за ядром: дійшло %s кбіт/с, у черзі %s КБ, оцінка каналу %s кбіт/с, %s%s",
                 self.label, s.get("frame", "?"), "%.1f" % out_fps if out_fps is not None else "?",
                 spread, s.get("bitrate", "?"),
                 s.get("drop_frames", "?"), s.get("dup_frames", "?"), s.get("speed", "?"), cpu,
@@ -314,6 +332,13 @@ class Engine(QObject):
                 "%d" % self.net["retrans_total"] if "retrans_total" in self.net else "?",
                 sent // 1024, preview, "%.0f" % self.kbit_now if self.kbit_now is not None else "?",
                 "%.1f" % self.in_fps if self.in_fps is not None else "?",
+                "%.2f" % self.pace if self.pace is not None else "?",
+                "%.0f" % self.net["through_kbit"] if "through_kbit" in self.net else "?",
+                "%d" % (self.net["queued"] // 1024) if "queued" in self.net else "?",
+                "%.0f" % self.net["kernel_kbit"] if self.net.get("kernel_kbit") else "?",
+                (("СЕРВЕР ПРИЙМАЄ ПОВІЛЬНО" if self.net.get("server_slow") else "МЕРЕЖА НЕ ВСТИГАЄ")
+                 if self.net.get("congested") else
+                 "шлемо менше, ніж канал може" if self.net.get("app_limited") else "без позначок") if self.net else "?",
                 " — ЕФІР ЗАВМЕР" if self.stalled else "")
 
     def _cpu_percent(self) -> str:

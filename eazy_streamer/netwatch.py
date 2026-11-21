@@ -1,9 +1,13 @@
 """Стан мережі кожного ефіру. RTMP іде по TCP, тому «втрачених пакетів» у потоці немає:
-загублене TCP надсилає ще раз. Саме ці повтори ми й рахуємо — утилітою ss."""
+загублене TCP надсилає ще раз. Ядро Linux веде облік кожного з'єднання — його ми й читаємо
+утилітою ss: скільки довелось надіслати повторно, скільки справді дійшло і скільки даних
+стоїть у черзі, бо мережа не забирає.
+"""
 
 from __future__ import annotations
 
 import re
+import time
 
 from PySide6.QtCore import QObject, QProcess, QTimer
 
@@ -15,7 +19,7 @@ class NetWatch(QObject):
         """engines — функція, що повертає живі рушії (у кожного є pid() і словник net)."""
         super().__init__(parent)
         self._engines = engines
-        self._prev: dict[int, tuple[int, int]] = {}    # pid -> (відправлено, з них повторно)
+        self._prev: dict[int, dict] = {}    # pid -> попередній замір
         self._proc: QProcess | None = None
         self._timer = QTimer(self)
         self._timer.setInterval(_PERIOD_MS)
@@ -45,24 +49,39 @@ class NetWatch(QObject):
         text = bytes(proc.readAllStandardOutput().data()).decode("utf-8", "replace")
         proc.deleteLater()
         seen = parse(text)
+        now = time.monotonic()
         for engine in self._engines():
             pid = engine.pid()
             if not pid or pid not in seen:
                 continue
-            sent, retrans, rtt = seen[pid]
+            cur = dict(seen[pid], at=now)
             prev = self._prev.get(pid)
-            self._prev[pid] = (sent, retrans)
-            net = {"rtt": rtt, "retrans_total": retrans}
-            if prev and sent > prev[0]:
-                net["loss"] = max(0.0, 100.0 * (retrans - prev[1]) / (sent - prev[0]))
+            self._prev[pid] = cur
+            net = {"rtt": cur["rtt"], "retrans_total": cur["retrans"], "queued": cur["notsent"],
+                   "app_limited": cur["app_limited"], "kernel_kbit": cur["delivery"] / 1000}
+            if prev and cur["sent"] > prev["sent"]:
+                net["loss"] = max(0.0, 100.0 * (cur["retrans"] - prev["retrans"]) / (cur["sent"] - prev["sent"]))
+            if prev and now > prev["at"]:
+                # скільки справді дійшло до того боку за цей проміжок — це і є ширина каналу, якщо впираємось
+                net["through_kbit"] = max(0, cur["acked"] - prev["acked"]) * 8 / 1000 / (now - prev["at"])
+            # Мережа не встигає: у черзі на відправку лежить більше ніж пів секунди потоку,
+            # і ядро не каже, що це програма шле мало. Два заміри поспіль, щоб не блимало.
+            flow = net.get("through_kbit") or 0
+            jam = (not cur["app_limited"]) and cur["notsent"] * 8 / 1000 > max(flow * 0.5, 400)
+            net["congested"] = bool(jam and prev and prev.get("jam"))
+            # Хто саме тримає: якщо більшу частину проміжку з'єднання стояло через «вікно приймача»,
+            # то це сервер не забирає дані; інакше — канал до нього
+            if prev and now > prev["at"]:
+                net["server_slow"] = (cur["rwnd_ms"] - prev["rwnd_ms"]) / 1000 / (now - prev["at"]) > 0.5
+            cur["jam"] = jam
             engine.net = net
         for pid in [p for p in self._prev if p not in seen]:
             del self._prev[pid]
 
 
-def parse(text: str) -> dict[int, tuple[int, int, float]]:
-    """Вивід `ss -tinHp` -> pid: (байт відправлено, байт повторно, затримка мс)."""
-    result: dict[int, tuple[int, int, float]] = {}
+def parse(text: str) -> dict[int, dict]:
+    """Вивід `ss -tinHp` -> pid: числа з'єднання (байти, мс, біт/с)."""
+    result: dict[int, dict] = {}
     pids: list[int] = []
     for line in text.splitlines():
         if line[:1] not in (" ", "\t"):
@@ -71,10 +90,18 @@ def parse(text: str) -> dict[int, tuple[int, int, float]]:
         sent = re.search(r"\bbytes_sent:(\d+)", line)
         if not sent or not pids:
             continue
-        retrans = re.search(r"\bbytes_retrans:(\d+)", line)     # поля немає, поки повторів не було
-        rtt = re.search(r"\brtt:([\d.]+)", line)
+
+        def number(pattern: str) -> float:
+            found = re.search(pattern, line)        # поля немає, поки воно нульове
+            return float(found.group(1)) if found else 0.0
+
+        info = {"sent": int(sent.group(1)), "retrans": int(number(r"\bbytes_retrans:(\d+)")),
+                "acked": int(number(r"\bbytes_acked:(\d+)")), "notsent": int(number(r"\bnotsent:(\d+)")),
+                "rtt": number(r"\brtt:([\d.]+)"), "delivery": number(r"\bdelivery_rate (\d+)bps"),
+                "app_limited": bool(re.search(r"\bapp_limited\b", line)),
+                # скільки мілісекунд з'єднання стояло, бо той бік не встигав приймати
+                "rwnd_ms": number(r"\brwnd_limited:(\d+)ms")}
         for pid in pids:
-            result[pid] = (int(sent.group(1)), int(retrans.group(1)) if retrans else 0,
-                           float(rtt.group(1)) if rtt else 0.0)
+            result[pid] = info
         pids = []
     return result

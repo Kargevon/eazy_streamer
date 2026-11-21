@@ -495,12 +495,21 @@ class Card(QFrame):
                     parts.append("ріже")
             if "loss" in net:
                 parts.append("втрати %.1f %%" % net["loss"])
-            slow = stats.get("speed", "1x").rstrip("x")
-            if self.engine.stalled:
+            lagging = eng.pace is not None and eng.pace < 0.9 and time.monotonic() - eng.live_since > 10
+            passes = ("%.1f" % ((net.get("through_kbit") or eng.kbit_now or 0) / 1000)).replace(".", ",")
+            if eng.stalled:
                 parts.append("кадри не йдуть")
                 tone = "wait"
-            elif (time.monotonic() - self.engine.live_since > 60
-                    and slow.replace(".", "", 1).isdigit() and float(slow) < 0.9):
+            elif net.get("congested"):
+                # Linux: ядро саме каже, що дані стоять у черзі на відправку
+                parts.append("%s, проходить %s Мбіт/с" % (
+                    "сервер приймає повільно" if net.get("server_slow") else "мережа не встигає", passes))
+                tone = "wait"
+            elif lagging and eng.cpu_pct is not None and eng.cpu_pct < 80 and "queued" not in net:
+                # Windows: ядро не спитати. Але ефір відстає, а ffmpeg майже не працює — значить, чекає мережу
+                parts.append("схоже, мережа не встигає, проходить %s Мбіт/с" % passes)
+                tone = "wait"
+            elif lagging:
                 parts.append("ПК не встигає")
                 tone = "wait"
             if net.get("loss", 0) > 2:
