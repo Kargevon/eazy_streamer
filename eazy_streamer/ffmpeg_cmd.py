@@ -43,8 +43,12 @@ DEFAULT_QUALITY = "mid"
 CPU_QUALITY = 23
 HW_QUALITY = 24
 # «Необмежено» теж має запобіжник: чистий шум на якості 24 дає понад 100 Мбіт/с
-# (виміряно), і такий потік покладе і канал, і сервер
-SAFETY_KBIT = 25000
+# (виміряно). 50 — стільки дрони шлють по повітрю, більше в ефір не треба
+SAFETY_KBIT = 50000
+# Що можна поставити олівцем на кнопці якості
+MAX_KBIT = SAFETY_KBIT
+MIN_KBIT = 100
+HEIGHTS = (144, 240, 360, 480, 720, 1080, 1440, 2160)
 
 # Як апаратний кодер керує бітрейтом — визначає проба при старті:
 #   quality — якість зі стелею (найкраще); vbr — стеля без якості, але на простій картинці
@@ -131,6 +135,24 @@ def _cpu_encoder(kbit: int, gop: int = STREAM_FPS * 2) -> list[str]:
 def rate_mode(level: int) -> str:
     """Як зараз керується бітрейт: від цього залежить, чи можна вірити напису «ріже»."""
     return "quality" if level == 0 else HW_RC
+
+
+def mbit(kbit: int) -> str:
+    """1000 -> «1», 2500 -> «2,5», 500 -> «0,5»."""
+    return ("%.2f" % (kbit / 1000)).rstrip("0").rstrip(".").replace(".", ",")
+
+
+def height_name(height: int) -> str:
+    return "4K" if height == 2160 else "%dp" % height
+
+
+def make_quality(key: str, height: int, kbit: int) -> Quality:
+    """Кнопка з власними числами (олівець). Усе поза межами тихо підтягуємо до меж."""
+    if key == "max":
+        return quality("max")
+    height = min(HEIGHTS, key=lambda h: abs(h - int(height)))
+    kbit = max(MIN_KBIT, min(MAX_KBIT, int(kbit)))
+    return Quality(key, mbit(kbit), height, kbit)
 
 
 def quality(key: str) -> Quality:

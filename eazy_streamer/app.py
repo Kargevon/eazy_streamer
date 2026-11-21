@@ -10,7 +10,7 @@ import time
 from PySide6.QtCore import QRect, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QIcon, QImage, QPainter
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QScrollArea,
     QSizePolicy, QVBoxLayout, QWidget,
 )
@@ -26,6 +26,11 @@ STYLE = """
 QWidget { background: #16181d; color: #e6e8ec; font-size: 14px; }
 QFrame#card { background: #1f232b; border: 1px solid #2e3440; border-radius: 10px; }
 QFrame#card QLabel { background: transparent; }
+QDoubleSpinBox { background: #12141a; border: 1px solid #3a4150; border-radius: 6px; padding: 6px 9px; }
+QPushButton#preset { padding: 6px 4px; }
+QPushButton#pencil { border: none; background: transparent; color: #8b93a3; font-size: 13px; padding: 0; }
+QPushButton#pencil:hover { color: white; }
+QPushButton#pencil:disabled { color: #4a5263; }
 QLineEdit, QComboBox { background: #12141a; border: 1px solid #3a4150; border-radius: 6px;
     padding: 7px 9px; selection-background-color: #3b6fd4; }
 QLineEdit:focus, QComboBox:focus { border-color: #5b8dee; }
@@ -70,6 +75,77 @@ class SourceCombo(QComboBox):
 
     def wheelEvent(self, event):
         event.ignore()
+
+
+class PresetButton(QPushButton):
+    """Кнопка якості: два рядки (бітрейт і розмір кадру) та олівець у кутку, щоб їх змінити."""
+
+    def __init__(self, on_edit=None):
+        super().__init__()
+        self.setObjectName("preset")
+        self.setCheckable(True)
+        self.setMinimumHeight(48)
+        self.pencil = None
+        if on_edit is not None:
+            self.pencil = QPushButton("✎", self)
+            self.pencil.setObjectName("pencil")
+            self.pencil.setFixedSize(20, 20)
+            self.pencil.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.pencil.setToolTip("Змінити бітрейт і розмір кадру цієї кнопки")
+            self.pencil.clicked.connect(on_edit)
+
+    def show_quality(self, q):
+        if q.kbit:
+            self.setText("%s Мбіт/с\n%s" % (q.label, ffmpeg_cmd.height_name(q.height)))
+            self.setToolTip("Бітрейт не вищий за %s Мбіт/с, кадр не більший за %s.\n"
+                            "Спокійна картинка займає менше. Більше, ніж дає джерело, кадр не буває." % (
+                                q.label, ffmpeg_cmd.height_name(q.height)))
+        else:
+            self.setText("Необмежено\nяк джерело")
+            self.setToolTip("Картинка займає стільки, скільки їй треба (не більше %s Мбіт/с),\n"
+                            "кадр — як дає джерело." % ffmpeg_cmd.mbit(ffmpeg_cmd.SAFETY_KBIT))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.pencil is not None:
+            self.pencil.move(self.width() - 21, 1)
+
+
+class PresetDialog(QDialog):
+    """Олівець на кнопці якості: розмір кадру зі списку, бітрейт руками."""
+
+    def __init__(self, parent, q):
+        super().__init__(parent)
+        self.setWindowTitle("Якість")
+        self.height_box = QComboBox()
+        for h in ffmpeg_cmd.HEIGHTS:
+            self.height_box.addItem(ffmpeg_cmd.height_name(h), h)
+        self.height_box.setCurrentIndex(max(0, self.height_box.findData(q.height)))
+        self.rate_box = QDoubleSpinBox()
+        self.rate_box.setDecimals(1)
+        self.rate_box.setSingleStep(0.5)
+        self.rate_box.setRange(ffmpeg_cmd.MIN_KBIT / 1000, ffmpeg_cmd.MAX_KBIT / 1000)
+        self.rate_box.setValue(q.kbit / 1000)
+        self.rate_box.setSuffix(" Мбіт/с")
+        form = QFormLayout()
+        form.addRow("Кадр не більший за", self.height_box)
+        form.addRow("Бітрейт не вищий за", self.rate_box)
+        save, cancel = QPushButton("Зберегти"), QPushButton("Скасувати")
+        save.setObjectName("add")
+        save.clicked.connect(self.accept)
+        cancel.clicked.connect(self.reject)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        buttons.addWidget(cancel)
+        buttons.addWidget(save)
+        box = QVBoxLayout(self)
+        box.setContentsMargins(18, 16, 18, 14)
+        box.setSpacing(14)
+        box.addLayout(form)
+        box.addLayout(buttons)
+
+    def result_numbers(self) -> tuple[int, int]:
+        return int(self.height_box.currentData()), int(round(self.rate_box.value() * 1000))
 
 
 class Preview(QWidget):
@@ -158,22 +234,27 @@ class Card(QFrame):
         self.eye_btn.setFixedWidth(44)
 
         self.quality_group = QButtonGroup(self)
-        self.quality_buttons: dict[str, QPushButton] = {}
+        self.quality_buttons: dict[str, PresetButton] = {}
         saved_quality = ffmpeg_cmd.quality(str(data.get("quality") or "")).key
+        # Числа на кнопках у кожної секції свої: їх міняють олівцем і зберігають разом із секцією
+        saved_presets = data.get("presets") if isinstance(data.get("presets"), dict) else {}
+        self.presets: dict[str, ffmpeg_cmd.Quality] = {}
         quality_row = QHBoxLayout()
         quality_row.setSpacing(6)
         for q in ffmpeg_cmd.QUALITIES:
-            btn = QPushButton(q.label)
-            btn.setCheckable(True)
+            own = saved_presets.get(q.key)
+            if q.kbit and isinstance(own, list) and len(own) == 2:
+                try:
+                    q = ffmpeg_cmd.make_quality(q.key, int(own[0]), int(own[1]))
+                except (TypeError, ValueError):
+                    pass
+            self.presets[q.key] = q
+            btn = PresetButton((lambda _checked=False, key=q.key: self._edit_preset(key)) if q.kbit else None)
+            btn.show_quality(q)
             btn.setChecked(q.key == saved_quality)
-            btn.setToolTip(
-                "Не більше %s Мбіт/с. Кадр в ефірі не більший за %dp.\nСпокійна картинка займає менше." % (
-                    q.label, q.height) if q.kbit else
-                "Без стелі: картинка займає стільки, скільки їй треба, кадр — як дає джерело.\n"
-                "Сніг і дрібні деталі можуть дати 10 Мбіт/с і більше.")
             self.quality_group.addButton(btn)
             self.quality_buttons[q.key] = btn
-            quality_row.addWidget(btn, 1 if q.kbit else 2)
+            quality_row.addWidget(btn, 1)
 
         self.go_btn = QPushButton()
         self.go_btn.setObjectName("go")
@@ -200,7 +281,7 @@ class Card(QFrame):
         box.addWidget(self.source_combo)
         box.addWidget(self._hint("Посилання на стрім"))
         box.addLayout(url_row)
-        box.addWidget(self._hint("Бітрейт, Мбіт/с"))
+        box.addWidget(self._hint("Якість"))
         box.addLayout(quality_row)
         box.addSpacing(4)
         box.addWidget(self.go_btn)
@@ -239,7 +320,23 @@ class Card(QFrame):
     def data(self) -> dict:
         return {"name": self.name_edit.text().strip(), "url": self.url_edit.text().strip(),
                 "source": self.source_key, "source_name": self.source_name,
-                "quality": self.quality_key()}
+                "quality": self.quality_key(),
+                "presets": {key: [q.height, q.kbit] for key, q in self.presets.items() if q.kbit}}
+
+    def current_quality(self):
+        return self.presets[self.quality_key()]
+
+    def _edit_preset(self, key: str):
+        dialog = PresetDialog(self, self.presets[key])
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        height, kbit = dialog.result_numbers()
+        self.presets[key] = ffmpeg_cmd.make_quality(key, height, kbit)
+        self.quality_buttons[key].show_quality(self.presets[key])
+        log.info("[%s] кнопку якості змінено: %s Мбіт/с, %s", self.title(), self.presets[key].label,
+                 ffmpeg_cmd.height_name(self.presets[key].height))
+        self.window_.save_soon()
+        self._refresh_view()
 
     def device(self) -> devices.Device | None:
         if self.source_key == devices.TEST_KEY:
@@ -295,7 +392,7 @@ class Card(QFrame):
         """Привести ffmpeg у відповідність до того, що обрано в секції."""
         dev = self.device()
         if self.live:
-            self.engine.show(dev, self.url_edit.text(), ffmpeg_cmd.quality(self.quality_key()))
+            self.engine.show(dev, self.url_edit.text(), self.current_quality())
         else:
             self.engine.show(dev, None, ffmpeg_cmd.quality("low"))
         self._refresh_view()
@@ -379,7 +476,7 @@ class Card(QFrame):
             tone = "wait" if live else "calm"
         elif state == engine.LIVE:
             text, tone = "● В ефірі  %s" % _clock(time.monotonic() - self.engine.live_since), "ok"
-            q = ffmpeg_cmd.quality(self.quality_key())
+            q = self.current_quality()
             eng = self.engine
             came = ffmpeg_cmd.source_size(dev_now, q.height)
             goes = ffmpeg_cmd.out_size(dev_now, q)
