@@ -344,7 +344,11 @@ def build(device: Device | None, url: str | None, q: Quality, level: int | None 
     kbit = stream_kbit(device, q)
     args += _hw_encoder(kbit, HW_LOW_POWER, gop) if level >= 1 else _cpu_encoder(kbit, gop)
     args += ["-fps_mode", "vfr"]
-    args += ["-c:a", "aac", "-b:a", "32k", "-shortest", "-flvflags", "no_duration_filesize"]
+    # Без -shortest: його черга синхронізації чекає на тишу зі звукової доріжки і на кожній
+    # дірці у відео тримає кадри 10 с (shortest_buf_duration), а потім викидає їх пачкою.
+    # На аналоговому захваті це давало сотні завмирань за добу. Якщо карта зникла, ffmpeg
+    # без -shortest сам не вийде — його за 12 с без кадрів прибере сторож у engine.
+    args += ["-c:a", "aac", "-b:a", "32k", "-flvflags", "no_duration_filesize"]
     if osdep.IS_WIN:
         # Windows дає сокету 64 КБ буфера відправки, і швидкість упирається в «буфер ÷ затримка»:
         # при 36 мс до сервера це 14,5 Мбіт/с — рівно стільки й проходило на «Необмежено».

@@ -68,6 +68,7 @@ class Engine(QObject):
         self._empty_frames = False
         self._step = 1
         self.stalled = False                # ефір іде, а нових кадрів немає
+        self._bad_streak = 0                # скільки поганих звітів поспіль
         self._rate_prev = None
         self._reports = 0
         self._err_line = bytearray()
@@ -157,6 +158,7 @@ class Engine(QObject):
         self.note = ""
         self._empty_frames = False
         self.stalled = False
+        self._bad_streak = 0
         self.net = {}
         self.src_fps = None
         self._rate_prev = None
@@ -304,7 +306,12 @@ class Engine(QObject):
         if self.kbit_now is not None and self._reports - self._logged_at >= 5:
             was = self._logged_kbit
             jump = was is not None and (self.kbit_now > was * 2 + 300 or self.kbit_now * 2 + 300 < was)
-        if self._reports % every != 1 and not slow and not lossy and not jump:
+        # Поганий звіт пишемо одразу, а далі раз на 10 с, поки погано: інакше доба поганого
+        # ефіру з'їдає весь журнал. Перший добрий після поганих теж пишемо — видно, скільки тривало.
+        bad = slow or lossy
+        streak, self._bad_streak = self._bad_streak, (self._bad_streak + 1 if bad else 0)
+        worth = (bad and streak % 5 == 0) or (not bad and streak > 0)
+        if self._reports % every != 1 and not worth and not jump:
             return
         self._logged_at, self._logged_kbit = self._reports, self.kbit_now
         window, self._fps_window = self._fps_window, []

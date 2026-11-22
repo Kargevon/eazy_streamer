@@ -125,7 +125,9 @@ class Watcher(QObject):
                 del self._known[alt]
                 del self._absent[alt]
             self._busy = False
-            log.debug("Опитування карт тривало %.1f с", time.monotonic() - self._started)
+            took = time.monotonic() - self._started
+            if took > 2:        # звичайні пів секунди раз на хвилину журналу не потрібні
+                log.debug("Опитування карт тривало %.1f с", took)
             self.found.emit(list(self._known.values()))
             return
         name, alt = new.pop(0)
