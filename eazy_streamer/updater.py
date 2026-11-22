@@ -210,14 +210,21 @@ class Updater(QObject):
             if p is not self._proc:
                 return
             self._proc = None
-            out = bytes(p.readAllStandardOutput().data()).decode("utf-8", "replace")
-            err = bytes(p.readAllStandardError().data()).decode("utf-8", "replace")
+            try:
+                out = bytes(p.readAllStandardOutput().data()).decode("utf-8", "replace")
+                err = bytes(p.readAllStandardError().data()).decode("utf-8", "replace")
+            except RuntimeError:    # вікно закрили посеред перевірки: Qt уже прибрав процес
+                return
             p.deleteLater()
             log.info("git %s: код %s %s", " ".join(args), code, (out + " " + err).strip()[:300])
             then(code if status == QProcess.ExitStatus.NormalExit else -1, out, err)
 
         def error(_e, p=proc):
-            if p is self._proc and p.error() == QProcess.ProcessError.FailedToStart:
+            try:
+                failed = p is self._proc and p.error() == QProcess.ProcessError.FailedToStart
+            except RuntimeError:    # те саме: програму закривають
+                return
+            if failed:
                 self._proc = None
                 p.deleteLater()
                 self._finish(self.failed, "Не знайдено git")
