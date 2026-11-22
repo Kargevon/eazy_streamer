@@ -69,6 +69,7 @@ class Engine(QObject):
         self._step = 1
         self.stalled = False                # ефір іде, а нових кадрів немає
         self._bad_streak = 0                # скільки поганих звітів поспіль
+        self._gap_max = 0.0                 # найдовша пауза між кадрами перегляду від минулого запису
         self._rate_prev = None
         self._reports = 0
         self._err_line = bytearray()
@@ -224,7 +225,16 @@ class Engine(QObject):
         # Показуємо лише найсвіжіший кадр — старі нікому не потрібні
         last = bytes(self._buf[(count - 1) * size:count * size])
         del self._buf[:count * size]
-        self._last_frame_at = time.monotonic()
+        now = time.monotonic()
+        # Пауза між кадрами перегляду = стільки мовчав вхід (карта, USB, розтискання).
+        # Мережі й сервера тут немає, тож це відділяє «не дала карта» від «не пройшло далі».
+        # Застереження: якщо зависло саме вікно програми, пауза вийде фальшива.
+        if self._got_frame:
+            gap = now - self._last_frame_at
+            self._gap_max = max(self._gap_max, gap)
+            if gap >= 1.0 and self.state == LIVE:
+                log.warning("[%s] вхід мовчав %.1f с — на платформі це стоп-кадр і стрибок", self.label, gap)
+        self._last_frame_at = now
         self._preview_frames += count
         if not self._got_frame:
             self._got_frame = True
@@ -321,6 +331,7 @@ class Engine(QObject):
             size = self._size_prev
         sent, self._size_prev = size - self._size_prev, size
         preview, self._preview_frames = self._preview_frames, 0
+        gap_max, self._gap_max = self._gap_max, 0.0
         spread = "?"
         if window:
             spread = "по 2 с: мін %.1f, макс %.1f" % (min(window), max(window))
@@ -329,7 +340,7 @@ class Engine(QObject):
         log.log(30 if slow or lossy else 20,
                 "[%s] хід: кадрів %s, в ефір %s к/с (%s), %s, викинуто %s, подвоєно %s, "
                 "швидкість %s, CPU %s, мережа: затримка %s мс, повторів %s%%, усього повторно %s байт; "
-                "від минулого запису: на сервер пішло %d КБ, у перегляд %d кадрів; зараз %s кбіт/с, вхід %s к/с, "
+                "від минулого запису: на сервер пішло %d КБ, у перегляд %d кадрів, найдовша пауза входу %.1f с; зараз %s кбіт/с, вхід %s к/с, "
                 "темп %s; мережа за ядром: дійшло %s кбіт/с, у черзі %s КБ, оцінка каналу %s кбіт/с, %s%s",
                 self.label, s.get("frame", "?"), "%.1f" % out_fps if out_fps is not None else "?",
                 spread, s.get("bitrate", "?"),
@@ -337,7 +348,7 @@ class Engine(QObject):
                 "%.0f" % self.net["rtt"] if "rtt" in self.net else "?",
                 "%.2f" % self.net["loss"] if "loss" in self.net else "?",
                 "%d" % self.net["retrans_total"] if "retrans_total" in self.net else "?",
-                sent // 1024, preview, "%.0f" % self.kbit_now if self.kbit_now is not None else "?",
+                sent // 1024, preview, gap_max, "%.0f" % self.kbit_now if self.kbit_now is not None else "?",
                 "%.1f" % self.in_fps if self.in_fps is not None else "?",
                 "%.2f" % self.pace if self.pace is not None else "?",
                 "%.0f" % self.net["through_kbit"] if "through_kbit" in self.net else "?",
