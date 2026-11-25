@@ -217,6 +217,44 @@ def recall_caps(saved) -> None:
             LEVEL_CAP_SINCE[str(key)] = since
 
 
+# Справжня частота кадрів карти, виміряна в ефірі. На Windows карта каже «30», а аналогове
+# відео дає 25 — це видно лише за лічильниками ffmpeg після хвилини роботи.
+TRUE_RATE: dict[str, int] = {}
+STANDARD_RATES = (24, 25, 30)
+
+
+def steady_rate(device: Device | None, rate: float | None) -> float | None:
+    """З якою рівною частотою слати кадри в ефір. None — як прийшли, так і шлемо.
+
+    На Windows час кадру ставить годинник комп'ютера в мить, коли кадр доїхав по USB. Карта
+    шле їх нерівно, а буває й пачками по 40 к/с замість 25: у вікні гладко, а платформа
+    на такому потоці показувала кадр раз на 3 с. Тому ffmpeg розкладає кадри на рівну сітку:
+    зайві викидає, дірку закриває повтором. На Linux час ставить ядро, там це не потрібно.
+    """
+    if not osdep.IS_WIN or _key(device) in TESTS:
+        return None
+    known = TRUE_RATE.get(_key(device))
+    if known:
+        return float(known)
+    return rate / thin_step(rate) if rate else float(STREAM_FPS)
+
+
+def learn_rate(device: Device | None, rate: int) -> None:
+    TRUE_RATE[_key(device)] = int(rate)
+
+
+def recall_rates(saved) -> None:
+    if not isinstance(saved, dict):
+        return
+    for key, value in saved.items():
+        try:
+            rate = int(value)
+        except (TypeError, ValueError):
+            continue
+        if rate in STANDARD_RATES:
+            TRUE_RATE[str(key)] = rate
+
+
 def capture(device: Device | None, want_height: int, preview: bool = False):
     """(формат, розмір, частота), які попросимо в джерела."""
     if device is not None and device.key == HEAVY_KEY:
@@ -331,7 +369,9 @@ def build(device: Device | None, url: str | None, q: Quality, level: int | None 
     # Лише якщо карта не вміє менше ніж 60 — беремо кожен другий, щоб не кодувати зайвого.
     step = thin_step(rate)
     thin = "framestep=%d," % step if step > 1 else ""
-    gop = max(20, int(round(2 * rate / step))) if rate else STREAM_FPS * 2     # ключовий кадр раз на 2 с
+    even = steady_rate(device, rate)
+    air_rate = even or (rate / step if rate else None)
+    gop = max(20, int(round(2 * air_rate))) if air_rate else STREAM_FPS * 2    # ключовий кадр раз на 2 с
     if level == 2:
         graph = _gpu_graph(fourcc, size, min(q.height, size[1]), thin)
     else:
@@ -343,7 +383,7 @@ def build(device: Device | None, url: str | None, q: Quality, level: int | None 
     args += ["-filter_complex", graph, "-map", "[air]", "-map", "1:a"]
     kbit = stream_kbit(device, q)
     args += _hw_encoder(kbit, HW_LOW_POWER, gop) if level >= 1 else _cpu_encoder(kbit, gop)
-    args += ["-fps_mode", "vfr"]
+    args += ["-r", "%g" % even, "-fps_mode", "cfr"] if even else ["-fps_mode", "vfr"]
     # Без -shortest: його черга синхронізації чекає на тишу зі звукової доріжки і на кожній
     # дірці у відео тримає кадри 10 с (shortest_buf_duration), а потім викидає їх пачкою.
     # На аналоговому захваті це давало сотні завмирань за добу. Якщо карта зникла, ffmpeg

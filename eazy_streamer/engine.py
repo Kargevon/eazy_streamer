@@ -70,6 +70,8 @@ class Engine(QObject):
         self.stalled = False                # ефір іде, а нових кадрів немає
         self._bad_streak = 0                # скільки поганих звітів поспіль
         self._gap_max = 0.0                 # найдовша пауза між кадрами перегляду від минулого запису
+        self._even = None                   # рівна частота кадрів в ефір (Windows); None — як дає джерело
+        self._rate_samples = []
         self._rate_prev = None
         self._reports = 0
         self._err_line = bytearray()
@@ -182,6 +184,8 @@ class Engine(QObject):
         self._set(STARTING, "Підключення…" if url else "")
         fourcc, size, rate = ffmpeg_cmd.capture(device, quality.height if url else 480, preview=not url)
         self._step = ffmpeg_cmd.thin_step(rate) if url else 1
+        self._even = ffmpeg_cmd.steady_rate(device, rate) if url else None
+        self._rate_samples = []
         self.rate_mode = ffmpeg_cmd.rate_mode(self._level)
         out = ffmpeg_cmd.out_size(device, quality) if url else None
         log.info("[%s] старт %s: вхід «%s» %s %s %s к/с; вихід %s, стеля %s, бітрейт керується: %s, обробка: %s",
@@ -277,6 +281,7 @@ class Engine(QObject):
             self.src_fps = max(0.0, ((cur[1] - prev[1]) - (cur[2] - prev[2]) + (cur[3] - prev[3])) / dt)
             self.out_fps = out_fps
             self.in_fps = self.src_fps * self._step
+            self._learn_rate()
             # Темп — на скільки секунд відео просунувся ефір за секунду справжнього часу. «Швидкість»
             # самого ffmpeg рахується від старту й ховає те, що відбувається зараз; ця — за 6 с.
             try:
@@ -358,6 +363,28 @@ class Engine(QObject):
                  if self.net.get("congested") else
                  "шлемо менше, ніж канал може" if self.net.get("app_limited") else "без позначок") if self.net else "?",
                 " — ЕФІР ЗАВМЕР" if self.stalled else "")
+
+    def _learn_rate(self):
+        """Хвилина рівного ефіру показує, скільки кадрів карта дає насправді. Якщо менше,
+        ніж ми шлемо (карта казала 30, а дає 25), — запам'ятовуємо і перезапускаємо ефір уже
+        з правильною частотою. Один раз на карту: нижче стандартних 24–25 не опускаємось."""
+        if not self._even or self.state != LIVE or self._stopping:
+            return
+        self._rate_samples.append(self.src_fps)
+        if len(self._rate_samples) < 30:
+            return
+        samples, self._rate_samples = sorted(self._rate_samples), []
+        mid = samples[len(samples) // 2]
+        rate = int(round(mid))
+        steady = sum(abs(x - mid) <= 1.0 for x in samples) >= 0.85 * len(samples)
+        if (rate not in ffmpeg_cmd.STANDARD_RATES or abs(mid - rate) > 0.5 or not steady
+                or rate >= self._even - 0.5):
+            return
+        device = self._running[0] if self._running else None
+        ffmpeg_cmd.learn_rate(device, rate)
+        log.warning("[%s] карта дає %d к/с, а не %g — запам'ятав, перезапускаю ефір із рівними %d к/с",
+                    self.label, rate, self._even, rate)
+        self._stop()
 
     def _cpu_percent(self) -> str:
         """Скільки одного ядра з'їв цей ffmpeg від минулого звіту (100% = ядро повністю)."""

@@ -191,5 +191,52 @@ class NetParseTest(unittest.TestCase):
         self.assertEqual((got[502]["rwnd_ms"], got[501]["rwnd_ms"]), (8852.0, 0.0))
 
 
+class SteadyRateTest(unittest.TestCase):
+    """На Windows в ефір ідуть рівні кадри з частотою, яку карта дає насправді."""
+
+    def setUp(self):
+        from eazy_streamer import osdep
+        self.osdep, self.was = osdep, osdep.IS_WIN
+        self.card = Device(key="win-card", path="/dev/video0", name="карта",
+                           formats={"MJPG": [(640, 480)]}, rates={("MJPG", 640, 480): [30.0]})
+        F.TRUE_RATE.pop("win-card", None)
+
+    def tearDown(self):
+        self.osdep.IS_WIN = self.was
+        F.TRUE_RATE.pop("win-card", None)
+
+    def _tail(self):
+        args = F.build(self.card, "rtmp://x/live/k", F.QUALITIES[0], level=0)
+        return " ".join(args)
+
+    def test_linux_sends_frames_as_they_come(self):
+        self.osdep.IS_WIN = False
+        self.assertIn("-fps_mode vfr", self._tail())
+        self.assertIsNone(F.steady_rate(self.card, 30.0))
+
+    def test_windows_evens_frames_at_what_the_card_claims_until_measured(self):
+        self.osdep.IS_WIN = True
+        text = self._tail()
+        self.assertIn("-r 30 -fps_mode cfr", text)
+        self.assertIn("-g 60", text)
+
+    def test_windows_uses_the_measured_rate_once_learned(self):
+        self.osdep.IS_WIN = True
+        F.learn_rate(self.card, 25)
+        text = self._tail()
+        self.assertIn("-r 25 -fps_mode cfr", text)
+        self.assertIn("-g 50", text)
+
+    def test_test_sources_are_left_alone(self):
+        self.osdep.IS_WIN = True
+        self.assertIsNone(F.steady_rate(None, 30.0))
+
+    def test_only_standard_rates_are_recalled(self):
+        F.recall_rates({"win-card": 8, "other": "x"})
+        self.assertNotIn("win-card", F.TRUE_RATE)
+        F.recall_rates({"win-card": 25})
+        self.assertEqual(F.TRUE_RATE["win-card"], 25)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -613,6 +613,10 @@ class Window(QMainWindow):
         # Для яких карт GPU вже відмовляв: щоб не наступати на ті самі граблі при кожному запуску
         ffmpeg_cmd.recall_caps(config.load_settings().get("level_cap"))
         self._caps_saved = dict(ffmpeg_cmd.LEVEL_CAP)
+        ffmpeg_cmd.recall_rates(config.load_settings().get("true_rate"))
+        self._rates_saved = dict(ffmpeg_cmd.TRUE_RATE)
+        for key, rate in ffmpeg_cmd.TRUE_RATE.items():
+            log.info("Пам'ятаю: джерело %s насправді дає %d к/с", key, rate)
         for key, level in ffmpeg_cmd.LEVEL_CAP.items():
             log.info("Пам'ятаю: для джерела %s обробка спрощена до «%s»", key, ffmpeg_cmd.LEVEL_NAMES[level])
         for item in config.load() or [{}]:
@@ -733,7 +737,7 @@ class Window(QMainWindow):
     def _log_load(self):
         live = [c.title() for c in self.cards if c.live]
         load = logs.load_line()         # рахуємо завжди: наступний замір порівнюється з цим
-        if ffmpeg_cmd.LEVEL_CAP != self._caps_saved:
+        if ffmpeg_cmd.LEVEL_CAP != self._caps_saved or ffmpeg_cmd.TRUE_RATE != self._rates_saved:
             self.save_soon()            # GPU щойно відмовив на якійсь карті — запам'ятати
         if live:
             log.info("Машина: %s | в ефірі %d: %s", load, len(live), ", ".join(live))
@@ -834,8 +838,10 @@ class Window(QMainWindow):
         try:
             config.save([card.data() for card in self.cards],
                         {"keep_awake": self.awake_box.isChecked(),
-                         "level_cap": ffmpeg_cmd.remembered_caps()})
+                         "level_cap": ffmpeg_cmd.remembered_caps(),
+                         "true_rate": dict(ffmpeg_cmd.TRUE_RATE)})
             self._caps_saved = dict(ffmpeg_cmd.LEVEL_CAP)
+            self._rates_saved = dict(ffmpeg_cmd.TRUE_RATE)
         except OSError as e:
             self.statusBar().showMessage("Не вдалося зберегти налаштування: %s" % e, 8000)
 
