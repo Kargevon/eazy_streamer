@@ -55,8 +55,13 @@ class CaptureSizeTest(unittest.TestCase):
     def test_sends_as_many_frames_as_source_gives(self):
         pal = Device("pal", "/dev/video7", "analog", {"MJPG": [(640, 480)]}, {("MJPG", 640, 480): [25.0]})
         args = F.build(pal, URL, F.quality("low"))
-        self.assertEqual(args[args.index("-fps_mode") + 1], "vfr")
-        self.assertNotIn("-r", args)
+        from eazy_streamer import osdep
+        if osdep.IS_WIN:        # там ті самі 25, але розкладені на рівну сітку
+            self.assertEqual(args[args.index("-fps_mode") + 1], "cfr")
+            self.assertEqual(args[args.index("-r") + 1], "25")
+        else:
+            self.assertEqual(args[args.index("-fps_mode") + 1], "vfr")
+            self.assertNotIn("-r", args)
         self.assertEqual(args[args.index("-g") + 1], "50")
         self.assertNotIn("framestep", " ".join(args))
         fast = Device("fast", "/dev/video6", "hdmi60", {"YUYV": [(1280, 720)]}, {("YUYV", 1280, 720): [60.0]})
@@ -200,9 +205,12 @@ class SteadyRateTest(unittest.TestCase):
         self.card = Device(key="win-card", path="/dev/video0", name="карта",
                            formats={"MJPG": [(640, 480)]}, rates={("MJPG", 640, 480): [30.0]})
         F.TRUE_RATE.pop("win-card", None)
+        # Сам вхід тут не перевіряємо: справжній залежить від системи, де йде тест
+        self.input_was, F._input = F._input, lambda device, cap: ["-i", "card"]
 
     def tearDown(self):
         self.osdep.IS_WIN = self.was
+        F._input = self.input_was
         F.TRUE_RATE.pop("win-card", None)
 
     def _tail(self):
